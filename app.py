@@ -12,7 +12,18 @@ from support import start_analysis
 st.set_page_config(page_title='Live Stock Support Dashboard', layout='wide')
 # Detect running state from lock file, not session_state
 running = os.path.exists("analysis.lock")
-
+def try_read_csv(path, retries=3, delay=0.2):
+    for _ in range(retries):
+        try:
+            df = pd.read_csv(path)
+            if not df.empty:
+                return df
+        except pd.errors.EmptyDataError:
+            time.sleep(delay)
+        except Exception as e:
+            st.warning(f"⚠️ Error reading {path}: {e}")
+            time.sleep(delay)
+    return pd.DataFrame()
 # Initialize state
 if "analysis_started" not in st.session_state:
     st.session_state.analysis_started = False
@@ -85,7 +96,7 @@ placeholder = st.empty()
 REFRESH_INTERVAL = 10  # seconds
 
 if os.path.exists("results_stable.csv"):
-    df = pd.read_csv("results_stable.csv")
+    df = pd.try_read_csv("results_stable.csv")
     if not df.empty:
 
         unique_key = str(uuid.uuid4())

@@ -8,6 +8,8 @@ import numpy as np
 from tqdm import tqdm
 from tickers import us_ticker_dict, eu_ticker_dict
 tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
+
+
 def compute_rsi(close_series, period=14):
     """
     Compute RSI from a pandas Series that may have multi-index (Date, Ticker).
@@ -84,6 +86,14 @@ def copy_results_snapshot():
         print(f"⚠️ Failed to copy results.csv: {e}")
 
 def start_analysis(set_progress):
+    for f in ["results.csv", "results_stable.csv", "progress.txt"]:
+        if os.path.exists(f):
+            os.remove(f)
+    import shutil
+
+    if os.path.exists("chart_data"):
+        shutil.rmtree("chart_data")
+    os.makedirs("chart_data", exist_ok=True)
     if os.path.exists("analysis.lock"):
         print("⚠️ Analysis already running. Exiting start_analysis.")
         return
