@@ -1,0 +1,139 @@
+import time
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from tqdm import tqdm
+from tickers import us_ticker_dict, eu_ticker_dict
+
+tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
+def compute_rsi(close_series, period=14):
+    """
+    Compute RSI from a pandas Series that may have multi-index (Date, Ticker).
+    Returns a flat Series indexed by Date.
+    """
+    # If Series has a multi-index, reduce to just Date index
+    if isinstance(close_series.index, pd.MultiIndex):
+        if 'Date' in close_series.index.names:
+            close_series = close_series.droplevel([i for i in close_series.index.names if i != 'Date'])
+        else:
+            close_series = close_series.droplevel(-1)
+
+    delta = close_series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+def find_support_levels(df, window=25, min_touches=3, tolerance=0.01):
+    levels = []
+    closes = df['Close'].values
+
+    for i in range(window, len(closes) - window):
+        local_window = closes[i - window:i + window + 1]
+        if closes[i] == min(local_window):
+            levels.append(closes[i])
+
+    grouped_levels = []
+    for level in levels:
+        if not any(abs(level - x) / x < tolerance for x in grouped_levels):
+            grouped_levels.append(level)
+
+    support_levels = []
+    for lvl in grouped_levels:
+        touches = np.sum(np.abs(closes - lvl) / lvl < tolerance)
+        if touches >= min_touches:
+            support_levels.append(float(lvl[0]))
+
+    return sorted(support_levels)
+
+def find_sharp_decline_to_support(df, support_levels, drop_threshold=0.1, days_lookback=30, proximity_threshold=0.03):
+    current_price = df['Close'].iloc[-1]
+    recent_high = df['Close'].rolling(window=days_lookback).max().iloc[-1]
+
+    # Force scalars
+    if isinstance(current_price, pd.Series):
+        current_price = current_price.item()
+    if isinstance(recent_high, pd.Series):
+        recent_high = recent_high.item()
+
+    drop_pct = (recent_high - current_price) / recent_high
+    near_support = any(
+        isinstance(level, (float, int)) and abs(current_price - level) / level < proximity_threshold
+        for level in support_levels
+    )
+
+    if drop_pct >= drop_threshold and near_support:
+        print(f"✓ Sharp drop detected: drop_pct={drop_pct:.2%}, price near support")
+    else:
+        print(f"✗ drop_pct={drop_pct:.2%}, near_support={near_support}")
+
+    return drop_pct >= drop_threshold and near_support
+
+
+def start_analysis():
+    print("Starting analysis...")
+    import csv
+    import os
+
+    # Initialize CSV with header
+
+    with open("results.csv", "w", newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Overall Score"])
+        writer.writeheader()
+
+    for ticker in tqdm(tickers):
+        file_path = f"chart_data/{ticker}.parquet"
+        if os.path.exists(file_path):
+            last_modified = os.path.getmtime(file_path)
+            age_hours = (time.time() - last_modified) / 3600
+            if age_hours < 24:
+                df = pd.read_parquet(file_path)
+            else:
+                df = yf.download(ticker, period="1y", interval="1d", progress=False)
+        else:
+            continue
+        if df.empty:
+            continue
+        df['RSI'] = compute_rsi(df['Close'])[ticker].values
+        current_rsi = df['RSI'].iloc[-1]
+        current_price = float(df['Close'].iloc[-1])
+        support_levels = find_support_levels(df)
+
+        for level in support_levels:
+            proximity = (current_price - level) / level
+            if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
+                if find_sharp_decline_to_support(df, support_levels):
+                    # Append each result row
+                    with open("results.csv", "a", newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Overall Score"])
+
+                        recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
+                        drop_pct = (recent_high - current_price) / recent_high * 100
+                        # Weighting components more intuitively
+                        rsi_score = max(0, 40 - current_rsi)  # Higher when RSI is lower, capped at 40
+                        drop_score = drop_pct  # Prefer higher drops
+                        proximity_score = max(0, 1 - (proximity / 0.03))  # Linear decay to 0 at 3%
+
+                        # Optional: Penalize low-priced tickers
+                        price_score = np.log10(current_price) if current_price > 0 else 0
+
+                        # Combine with tuned weights
+                        overall_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
+                                    price_score * 0.5)
+                        writer.writerow({
+                            "Ticker": ticker,
+                            "Current Price": round(current_price, 2),
+                            "Support Level": round(level, 2),
+                            "Proximity %": round(proximity * 100, 2),
+                            "RSI": round(current_rsi, 2),
+                            "Drop %": round(drop_pct, 2),
+                            "Overall Score": round(overall_score, 2)
+                        })
+                        os.makedirs("chart_data", exist_ok=True)
+
+                        df.to_parquet(f"chart_data/{ticker}.parquet")
