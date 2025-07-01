@@ -96,7 +96,7 @@ placeholder = st.empty()
 REFRESH_INTERVAL = 10  # seconds
 
 if os.path.exists("results_stable.csv"):
-    df = pd.try_read_csv("results_stable.csv")
+    df = try_read_csv("results_stable.csv")
     if not df.empty:
 
         unique_key = str(uuid.uuid4())
