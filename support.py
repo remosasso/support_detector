@@ -1,11 +1,12 @@
 import time
+import csv
+import os
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from tickers import us_ticker_dict, eu_ticker_dict
-
 tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
 def compute_rsi(close_series, period=14):
     """
@@ -74,19 +75,31 @@ def find_sharp_decline_to_support(df, support_levels, drop_threshold=0.1, days_l
 
     return drop_pct >= drop_threshold and near_support
 
+def copy_results_snapshot():
+    try:
+        import shutil
+        shutil.copyfile("results.csv", "results_stable.csv")
+        print("📄 Copied snapshot to results_stable.csv")
+    except Exception as e:
+        print(f"⚠️ Failed to copy results.csv: {e}")
 
-def start_analysis():
-    print("Starting analysis...")
-    import csv
-    import os
+def start_analysis(set_progress):
+    if os.path.exists("analysis.lock"):
+        print("⚠️ Analysis already running. Exiting start_analysis.")
+        return
 
+    with open("analysis.lock", "w") as f:
+        f.write("running")
+        print("Starting analysis...")
     # Initialize CSV with header
 
     with open("results.csv", "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Overall Score"])
         writer.writeheader()
 
-    for ticker in tqdm(tickers):
+    total = len(tickers)
+    for i, ticker in tqdm(enumerate(tickers)):
+        set_progress((i + 1) / total)  # update progress externally
         file_path = f"chart_data/{ticker}.parquet"
         if os.path.exists(file_path):
             last_modified = os.path.getmtime(file_path)
@@ -96,7 +109,7 @@ def start_analysis():
             else:
                 df = yf.download(ticker, period="1y", interval="1d", progress=False)
         else:
-            continue
+            df = yf.download(ticker, period="1y", interval="1d", progress=False)
         if df.empty:
             continue
         df['RSI'] = compute_rsi(df['Close'])[ticker].values
@@ -137,3 +150,10 @@ def start_analysis():
                         os.makedirs("chart_data", exist_ok=True)
 
                         df.to_parquet(f"chart_data/{ticker}.parquet")
+
+        if i % 100 == 0:
+            copy_results_snapshot()
+    copy_results_snapshot()
+    if os.path.exists("analysis.lock"):
+        os.remove("analysis.lock")
+

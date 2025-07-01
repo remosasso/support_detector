@@ -10,35 +10,73 @@ import yfinance as yf
 from support import start_analysis
 
 st.set_page_config(page_title='Live Stock Support Dashboard', layout='wide')
+# Detect running state from lock file, not session_state
+running = os.path.exists("analysis.lock")
 
-# Flag to avoid restarting analysis multiple times
+# Initialize state
 if "analysis_started" not in st.session_state:
     st.session_state.analysis_started = False
+if "progress" not in st.session_state:
+    st.session_state.progress = 0.0
+def get_progress_file():
+    if os.path.exists("progress.txt"):
+        with open("progress.txt") as f:
+            try:
+                return float(f.read())
+            except:
+                return 0.0
+    return 0.0
+
+
+def set_progress_file(progress: float):
+    with open("progress.txt", "w") as f:
+        f.write(str(progress))
+
 
 with st.sidebar:
+
     st.title('📊 Live Stock Support Level Analysis')
     st.markdown("""
     This dashboard displays stocks near major support levels based on RSI and proximity to support.
     The analysis runs in the background and updates the dashboard as new data comes in.
     """)
-    if st.button("▶️ (Re-)Start Analysis in Background"):
-        if os.path.exists("results.csv"):
-            os.remove("results.csv")
-        def run_analysis():
-            try:
-                start_analysis()
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
-
-
-        thread = threading.Thread(target=run_analysis)
-        thread.daemon = True
-        thread.start()
+    if running:
+        progress = get_progress_file()
         st.session_state.analysis_started = True
-        st.success("Started analysis thread. Dashboard will update as data comes in.")
+        st.sidebar.markdown(f'🔄 Analysis in Progress {progress * 100:.1f}%')
+        st.sidebar.progress(progress)
+        st.sidebar.caption("Refreshing automatically...")
+    else:
+        st.sidebar.success("✅ No analysis running.")
 
-    if st.button("🔄 Refresh Data"):
-        st.rerun()
+    # Display live progress
+    if st.button("▶️ (Re-)Start Analysis in Background", disabled=running):
+        if os.path.exists("analysis.lock"):
+            st.warning("⚠️ Analysis already running. Please wait or delete 'analysis.lock' to force restart.")
+        else:
+            st.session_state.analysis_started = False
+            st.session_state.progress = 0.0
+            set_progress_file(0.0)
+            if os.path.exists("results.csv"):
+                os.remove("results.csv")
+            if os.path.exists("results_stable.txt"):
+                os.remove("results_stable.csv")
+
+
+            def run_analysis():
+                try:
+                    start_analysis(set_progress_file)
+                except Exception as e:
+                    st.session_state.analysis_started = False
+                    st.error(f"Analysis failed: {e}")
+
+
+            thread = threading.Thread(target=run_analysis, daemon=True)
+            thread.start()
+            st.session_state.analysis_started = True
+            st.success("Started analysis thread. Dashboard will update as data comes in.")
+            st.rerun()
+
 
 
 
@@ -46,8 +84,8 @@ with st.sidebar:
 placeholder = st.empty()
 REFRESH_INTERVAL = 10  # seconds
 
-if os.path.exists("results.csv"):
-    df = pd.read_csv("results.csv")
+if os.path.exists("results_stable.csv"):
+    df = pd.read_csv("results_stable.csv")
     if not df.empty:
 
         unique_key = str(uuid.uuid4())
@@ -129,3 +167,12 @@ if os.path.exists("results.csv"):
         st.warning("📄 results.csv found, but no data yet. Waiting...")
 else:
     st.info("🕒 Awaiting results.csv from background analysis...")
+
+if st.session_state.analysis_started:
+    progress = get_progress_file()
+
+    time.sleep(1)
+    st.rerun()
+
+elif os.path.exists("progress.txt") and get_progress_file() >= 1.0:
+    st.sidebar.success("✅ Analysis complete!")
