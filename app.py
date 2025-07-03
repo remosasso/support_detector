@@ -187,3 +187,6 @@ if st.session_state.analysis_started:
 
 elif os.path.exists("progress.txt") and get_progress_file() >= 1.0:
     st.sidebar.success("✅ Analysis complete!")
+
+if st.button("Hard reset"):
+    os.remove("analysis.lock")
