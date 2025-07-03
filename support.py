@@ -32,14 +32,16 @@ def compute_rsi(close_series, period=14):
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
-def find_support_levels(df, window=25, min_touches=3, tolerance=0.01):
+
+def find_support_levels(df, window=12, min_touches=3, tolerance=0.01):
     levels = []
     closes = df['Close'].values
-
+    dates = []
     for i in range(window, len(closes) - window):
         local_window = closes[i - window:i + window + 1]
         if closes[i] == min(local_window):
             levels.append(closes[i])
+            dates.append(df.index[i])
 
     grouped_levels = []
     for level in levels:
@@ -53,6 +55,28 @@ def find_support_levels(df, window=25, min_touches=3, tolerance=0.01):
             support_levels.append(float(lvl[0]))
 
     return sorted(support_levels)
+
+def is_sharp_drop(df, drop_threshold=0.1, full_lookback=30, slope_window=5, slope_threshold=-0.01):
+    """
+    Checks for a sharp drop based on:
+    1. Percentage drop over a longer lookback period (e.g. 30 days)
+    2. Slope over recent 'slope_days' (e.g. 3–5 days) being steep enough
+    """
+    close = df['Close'].iloc[-full_lookback:]
+    if len(close) < slope_window + 1:
+        return False
+
+    # Compute drop % over the full window
+    drop_pct = (close.iloc[0] - close.iloc[-1]) / close.iloc[0]
+
+    # Scan for any sharp 5-day downward slope in the window
+    for i in range(len(close) - slope_window):
+        window = close.iloc[i:i + slope_window]
+        slope = np.polyfit(range(slope_window), window.values, 1)[0] / window.iloc[0]
+        if drop_pct.item() >= drop_threshold and slope.item() <= slope_threshold:
+            print(f"✓ Sharp drop detected: {drop_pct.index[0]} drop_pct={drop_pct.item():.2%}, price near support, slope={slope.item()}")
+            return True
+    return False
 
 def find_sharp_decline_to_support(df, support_levels, drop_threshold=0.1, days_lookback=30, proximity_threshold=0.03):
     current_price = df['Close'].iloc[-1]
@@ -69,11 +93,6 @@ def find_sharp_decline_to_support(df, support_levels, drop_threshold=0.1, days_l
         isinstance(level, (float, int)) and abs(current_price - level) / level < proximity_threshold
         for level in support_levels
     )
-
-    if drop_pct >= drop_threshold and near_support:
-        print(f"✓ Sharp drop detected: drop_pct={drop_pct:.2%}, price near support")
-    else:
-        print(f"✗ drop_pct={drop_pct:.2%}, near_support={near_support}")
 
     return drop_pct >= drop_threshold and near_support
 
@@ -106,7 +125,6 @@ def start_analysis(set_progress):
     with open("results.csv", "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Overall Score"])
         writer.writeheader()
-
     total = len(tickers)
     for i, ticker in tqdm(enumerate(tickers)):
         set_progress((i + 1) / total)  # update progress externally
@@ -130,7 +148,7 @@ def start_analysis(set_progress):
         for level in support_levels:
             proximity = (current_price - level) / level
             if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
-                if find_sharp_decline_to_support(df, support_levels):
+                if find_sharp_decline_to_support(df, support_levels) and is_sharp_drop(df):
                     # Append each result row
                     with open("results.csv", "a", newline='') as f:
                         writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Overall Score"])
@@ -167,3 +185,9 @@ def start_analysis(set_progress):
     if os.path.exists("analysis.lock"):
         os.remove("analysis.lock")
 
+
+DEBUG = False
+if DEBUG:
+    if os.path.exists("analysis.lock"):
+        os.remove("analysis.lock")
+    start_analysis(lambda x: print(f"Progress: {x * 100:.2f}%"))
