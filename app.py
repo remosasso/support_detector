@@ -189,7 +189,6 @@ if os.path.exists("results_stable.csv"):
                         tickangle=0,
                     )
                 )
-                print(chart_data.head())
                 support_y = df[df['Ticker'] == ticker]['Support Level'].values[0]
 
                 fig.add_trace(go.Scatter(
