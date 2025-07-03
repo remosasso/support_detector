@@ -129,26 +129,7 @@ def start_analysis(set_progress):
     with open("results.csv", "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Overall Score"])
         writer.writeheader()
-    tickers = """
-    LQDA
-SUPV
-PRGS
-KVUE
-GPCR
-BIRK
-RXST
-EPAC
-EPAC
-PCRX
-HDL
-RELY
-FRPT
-CSWI
-TAP
-    """
-    ## make list from ticker string
-    tickers = [ticker.strip() for ticker in tickers.split() if ticker.strip()]
-    tickers = ["PRGS", "SUPV", "LQDA", "GPCR", "BIRK", "RXST", "EPAC", "PCRX", "HDL", "RELY", "FRPT", "CSWI", "TAP"]  # Example subset for testing
+
     total = len(tickers)
     for i, ticker in tqdm(enumerate(tickers)):
         set_progress((i + 1) / total)  # update progress externally
