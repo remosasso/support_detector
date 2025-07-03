@@ -68,15 +68,19 @@ def is_sharp_drop(df, drop_threshold=0.1, full_lookback=30, slope_window=5, slop
 
     # Compute drop % over the full window
     drop_pct = (close.iloc[0] - close.iloc[-1]) / close.iloc[0]
+    best_slope = 0  # Most negative (sharpest down)
 
     # Scan for any sharp 5-day downward slope in the window
     for i in range(len(close) - slope_window):
         window = close.iloc[i:i + slope_window]
         slope = np.polyfit(range(slope_window), window.values, 1)[0] / window.iloc[0]
+        best_slope = min(best_slope, slope.item())
+
         if drop_pct.item() >= drop_threshold and slope.item() <= slope_threshold:
             print(f"✓ Sharp drop detected: {drop_pct.index[0]} drop_pct={drop_pct.item():.2%}, price near support, slope={slope.item()}")
-            return True
-    return False
+            return True, best_slope
+
+    return False, None
 
 def find_sharp_decline_to_support(df, support_levels, drop_threshold=0.1, days_lookback=30, proximity_threshold=0.03):
     current_price = df['Close'].iloc[-1]
@@ -125,6 +129,26 @@ def start_analysis(set_progress):
     with open("results.csv", "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Overall Score"])
         writer.writeheader()
+    tickers = """
+    LQDA
+SUPV
+PRGS
+KVUE
+GPCR
+BIRK
+RXST
+EPAC
+EPAC
+PCRX
+HDL
+RELY
+FRPT
+CSWI
+TAP
+    """
+    ## make list from ticker string
+    tickers = [ticker.strip() for ticker in tickers.split() if ticker.strip()]
+    tickers = ["PRGS", "SUPV", "LQDA", "GPCR", "BIRK", "RXST", "EPAC", "PCRX", "HDL", "RELY", "FRPT", "CSWI", "TAP"]  # Example subset for testing
     total = len(tickers)
     for i, ticker in tqdm(enumerate(tickers)):
         set_progress((i + 1) / total)  # update progress externally
@@ -149,6 +173,9 @@ def start_analysis(set_progress):
             proximity = (current_price - level) / level
             if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
                 if find_sharp_decline_to_support(df, support_levels) and is_sharp_drop(df):
+                    _, slope = is_sharp_drop(df)
+                    slope_score = abs(slope) * 1000 if slope is not None else 0  # Scale for interpretability
+
                     # Append each result row
                     with open("results.csv", "a", newline='') as f:
                         writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Overall Score"])
@@ -165,7 +192,7 @@ def start_analysis(set_progress):
 
                         # Combine with tuned weights
                         overall_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
-                                    price_score * 0.5)
+                                    price_score * 0.5) + (slope_score * 1.2)
                         writer.writerow({
                             "Ticker": ticker,
                             "Current Price": round(current_price, 2),
@@ -177,7 +204,11 @@ def start_analysis(set_progress):
                         })
                         os.makedirs("chart_data", exist_ok=True)
 
-                        df.to_parquet(f"chart_data/{ticker}.parquet")
+                        # 4-hour data (max 60d)
+                        df_4h = yf.download(ticker, period="60d", interval="4h", progress=False)
+                        if not df_4h.empty:
+                            df_4h.to_parquet(f"chart_data/{ticker}_4h.parquet")
+                        df.to_parquet(f"chart_data/{ticker}_1d.parquet")
                         copy_results_snapshot()
 
     copy_results_snapshot()

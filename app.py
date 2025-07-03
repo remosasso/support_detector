@@ -88,7 +88,8 @@ with st.sidebar:
             st.success("Started analysis thread. Dashboard will update as data comes in.")
             st.rerun()
 
-
+    if st.button("Hard reset"):
+        os.remove("analysis.lock")
 
 
 # Display updating dashboard
@@ -111,29 +112,55 @@ if os.path.exists("results_stable.csv"):
 
         ## dropdown for tickers
         ticker = st.selectbox("Select Ticker", sorted_df["Ticker"].unique(), index=0, key=f"live_tick_").upper()
-        range_option = st.selectbox("Select Time Range", ["1Y", "1M", "3M", "6M"], key=f"live_range_")
+        # Time range
+        range_option = st.selectbox("Select Time Range", ["1Y", "6M", "3M", "1M"], key=f"live_range_")
         period_map_days = {
             "1Y": 252,
-            "1M": 21,
-            "3M": 63,
             "6M": 126,
-
+            "3M": 63,
+            "1M": 21,
         }
         period_days = period_map_days[range_option]
-        chart_path = f"chart_data/{ticker}.parquet"
+        interval_option = "1D"
+        # Valid intervals based on range
+        if range_option in ["1M", "3M"]:
+            interval_option = st.selectbox("Select Interval", ["1D", "4H"], key=f"live_interval_")
+        else:
+            interval_option = "1D"  # Force 1D if too long
+            st.info("📏 4H candles only available for short time ranges (≤3M)")
+            chart_path = f"chart_data/{ticker}_1d.parquet"
+        chart_path = f"chart_data/{ticker}_1d.parquet" if interval_option == "1D" else f"chart_data/{ticker}_4h.parquet"
 
         if os.path.exists(chart_path):
             try:
-                chart_data = pd.read_parquet(chart_path)
 
-                # Handle MultiIndex
+
+                chart_data = pd.read_parquet(chart_path)
+                # Flatten MultiIndex if needed
+                # Flatten MultiIndex if needed
                 if isinstance(chart_data.columns, pd.MultiIndex):
                     chart_data.columns = chart_data.columns.get_level_values(0)
 
-                chart_data.index = pd.to_datetime(chart_data.index)
-                chart_data = chart_data[chart_data.index >= pd.Timestamp.today() - pd.Timedelta(days=period_days)]
-                chart_data = chart_data.reset_index()
+                # Handle datetime
+                if "Date" in chart_data.columns:
+                    chart_data["Date"] = pd.to_datetime(chart_data["Date"])
+                elif "Datetime" in chart_data.columns:
+                    chart_data["Date"] = pd.to_datetime(chart_data["Datetime"])
+                elif pd.api.types.is_datetime64_any_dtype(chart_data.index):
+                    # Localize only if tz-naive
+                    if chart_data.index.tz is None:
+                        chart_data["Date"] = pd.to_datetime(chart_data.index).tz_localize("UTC")
+                    else:
+                        chart_data["Date"] = pd.to_datetime(chart_data.index)
+                else:
+                    st.error("No valid datetime column or index found.")
+                    st.stop()
 
+                # Filter by range
+                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=period_days)
+                chart_data = chart_data[chart_data["Date"] >= cutoff]
+
+                # Step 5: Plot
                 fig = go.Figure(data=[go.Candlestick(
                     x=chart_data['Date'],
                     open=chart_data['Open'],
@@ -141,24 +168,41 @@ if os.path.exists("results_stable.csv"):
                     low=chart_data['Low'],
                     close=chart_data['Close'],
                     increasing_line_color='green',
-                    decreasing_line_color='red'
+                    decreasing_line_color='red',
+
+
                 )])
                 fig.update_layout(
-                    title=f"{ticker} – {range_option} Candlestick Chart",
+                    title=f"{ticker} – {range_option} Candlestick Chart ({interval_option})",
                     xaxis_title="Date",
                     yaxis_title="Price",
                     xaxis_rangeslider_visible=False,
                     height=600
                 )
-                fig.add_shape(
-                    type="line",
-                    x0=chart_data['Date'].min(),
-                    x1=chart_data['Date'].max(),
-                    y0=df[df['Ticker'] == ticker]['Support Level'].values[0],
-                    y1=df[df['Ticker'] == ticker]['Support Level'].values[0],
-                    line=dict(color="blue", width=2, dash="dash"),
+                fig.update_xaxes(type="category")
+                tick_indices = chart_data.index[::7]  # show every 10th bar (adjust if too few/many)
+                fig.update_layout(
+                    xaxis=dict(
+                        tickmode="array",
+                        tickvals=chart_data.loc[tick_indices, "Date"],
+                        ticktext=chart_data.loc[tick_indices, "Date"].dt.strftime("%b %d"),
+                        tickangle=0,
+                    )
                 )
+                print(chart_data.head())
+                support_y = df[df['Ticker'] == ticker]['Support Level'].values[0]
+
+                fig.add_trace(go.Scatter(
+                    x=chart_data['Date'],  # categorical x-values still work here
+                    y=[support_y] * len(chart_data),
+                    mode="lines",
+                    line=dict(color="blue", dash="dash", width=2),
+                    name="Support Level",
+                    hoverinfo="skip",
+                    showlegend=False
+                ))
                 st.plotly_chart(fig, use_container_width=True, key=f"chart_{ticker}_")
+
             except Exception as e:
                 st.error(f"Failed to render chart: {e}")
         else:
@@ -188,5 +232,3 @@ if st.session_state.analysis_started:
 elif os.path.exists("progress.txt") and get_progress_file() >= 1.0:
     st.sidebar.success("✅ Analysis complete!")
 
-if st.button("Hard reset"):
-    os.remove("analysis.lock")
