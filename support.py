@@ -178,9 +178,8 @@ def start_analysis(set_progress):
                         os.makedirs("chart_data", exist_ok=True)
 
                         df.to_parquet(f"chart_data/{ticker}.parquet")
+                        copy_results_snapshot()
 
-        if i % 100 == 0:
-            copy_results_snapshot()
     copy_results_snapshot()
     if os.path.exists("analysis.lock"):
         os.remove("analysis.lock")
