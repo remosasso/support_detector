@@ -110,6 +110,9 @@ def copy_results_snapshot():
     try:
         import shutil
         shutil.copyfile("results.csv", "results_stable.csv")
+        df = pd.read_csv("results_stable.csv")
+        df = df.drop_duplicates(subset="Ticker", keep="last")  # or keep="best" logic
+        df.to_csv("results_stable.csv", index=False)
         print("📄 Copied snapshot to results_stable.csv")
     except Exception as e:
         print(f"⚠️ Failed to copy results.csv: {e}")
