@@ -8,7 +8,8 @@ import numpy as np
 from tqdm import tqdm
 from tickers import us_ticker_dict, eu_ticker_dict
 tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
-
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def compute_rsi(close_series, period=14):
     """
@@ -52,9 +53,13 @@ def find_support_levels(df, window=12, min_touches=3, tolerance=0.01):
     for lvl in grouped_levels:
         touches = np.sum(np.abs(closes - lvl) / lvl < tolerance)
         if touches >= min_touches:
-            support_levels.append(float(lvl[0]))
+            support_levels.append(float(lvl.item()))
 
-    return sorted(support_levels)
+    support_series = pd.Series(index=df.index, data=np.nan)
+    for date, level in zip(dates, support_levels):
+        support_series.loc[date] = level
+
+    return support_series.ffill()
 
 def is_sharp_drop(df, drop_threshold=0.1, full_lookback=30, slope_window=5, slope_threshold=-0.01):
     """
@@ -108,6 +113,68 @@ def copy_results_snapshot():
     except Exception as e:
         print(f"⚠️ Failed to copy results.csv: {e}")
 
+import yfinance as yf
+import numpy as np
+import pandas as pd
+
+# ---------- tiny helper ---------------------------------------------------
+def first_value(df: pd.DataFrame, *candidates):
+    """
+    Return the first non-NaN value among the candidate column names.
+    Works on a (dates × columns) DataFrame where the newest date is row 0.
+    """
+    for c in candidates:
+        if c in df.columns:
+            v = df[c].iloc[0]
+            if pd.notna(v):
+                return v
+    return np.nan
+
+# ---------- main snapshot -------------------------------------------------
+def fundamental_snapshot(ticker: str, *, freq="yearly") -> dict:
+    t   = yf.Ticker(ticker)
+    inf = t.get_info()
+
+    # transpose so dates → rows, items → columns
+    inc = t.get_income_stmt(freq=freq).T.sort_index(ascending=False)
+    cfs = t.get_cashflow(freq=freq).T.sort_index(ascending=False)
+    bal = t.get_balance_sheet(freq=freq).T.sort_index(ascending=False)
+
+    revenue = first_value(inc, "TotalRevenue", "Total Revenue")
+    op_margin = inf.get("operatingMargins", np.nan)
+
+    # --- Free-cash-flow margin -------------------------------------------
+    fcf = first_value(cfs, "FreeCashFlow", "Free Cash Flow")
+    if np.isnan(fcf):
+        ocf   = first_value(cfs, "OperatingCashFlow",
+                                 "Operating Cash Flow",
+                                 "CashFlowFromContinuingOperatingActivities")
+        capex = abs(first_value(cfs, "CapitalExpenditure", "Capital Expenditure"))
+        fcf   = ocf - capex if pd.notna(ocf) and pd.notna(capex) else np.nan
+    fcf_margin = fcf / revenue if revenue else np.nan
+
+    # --- Net-debt / EBITDA ----------------------------------------------
+    debt = first_value(bal, "TotalDebt", "Total Debt")
+    cash = first_value(bal, "CashAndCashEquivalents", "Cash")
+    net_debt = debt - cash if pd.notna(debt) and pd.notna(cash) else np.nan
+    nde_ratio = net_debt / inf.get("ebitda", np.nan)
+
+    # --- 5-year revenue CAGR --------------------------------------------
+    if len(inc) >= 5 and pd.notna(revenue):
+        rev_old = inc["TotalRevenue"].iloc[4]
+        rev_cagr_5y = (revenue / rev_old) ** (1/5) - 1
+    else:
+        rev_cagr_5y = np.nan
+
+    fund_score = sum([
+        op_margin > 0.08,
+        fcf_margin > 0.05,
+        nde_ratio < 3,
+        rev_cagr_5y > 0.03,
+    ])
+    return fund_score
+
+
 def start_analysis(set_progress):
     for f in ["results.csv", "results_stable.csv", "progress.txt"]:
         if os.path.exists(f):
@@ -127,7 +194,7 @@ def start_analysis(set_progress):
     # Initialize CSV with header
 
     with open("results.csv", "w", newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Overall Score"])
+        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
         writer.writeheader()
 
     total = len(tickers)
@@ -149,7 +216,7 @@ def start_analysis(set_progress):
         current_rsi = df['RSI'].iloc[-1]
         current_price = float(df['Close'].iloc[-1])
         support_levels = find_support_levels(df)
-
+        fund_score = fundamental_snapshot(ticker)
         for level in support_levels:
             proximity = (current_price - level) / level
             if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
@@ -159,7 +226,7 @@ def start_analysis(set_progress):
 
                     # Append each result row
                     with open("results.csv", "a", newline='') as f:
-                        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Overall Score"])
+                        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
 
                         recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
                         drop_pct = (recent_high - current_price) / recent_high * 100
@@ -172,8 +239,9 @@ def start_analysis(set_progress):
                         price_score = np.log10(current_price) if current_price > 0 else 0
 
                         # Combine with tuned weights
-                        overall_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
+                        technical_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
                                     price_score * 0.5) + (slope_score * 1.2)
+                        overall_score = technical_score + fund_score * 25
                         writer.writerow({
                             "Ticker": ticker,
                             "Current Price": round(current_price, 2),
@@ -181,6 +249,8 @@ def start_analysis(set_progress):
                             "Proximity %": round(proximity * 100, 2),
                             "RSI": round(current_rsi, 2),
                             "Drop %": round(drop_pct, 2),
+                            "Technical Score": round(technical_score, 2),
+                            "Fundamental Score": round(fund_score, 2) * 25,
                             "Overall Score": round(overall_score, 2)
                         })
                         os.makedirs("chart_data", exist_ok=True)
