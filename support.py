@@ -10,7 +10,8 @@ from tickers import us_ticker_dict, eu_ticker_dict
 tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 def compute_rsi(close_series, period=14):
     """
     Compute RSI from a pandas Series that may have multi-index (Date, Ticker).
