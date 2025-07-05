@@ -88,8 +88,8 @@ with st.sidebar:
             st.success("Started analysis thread. Dashboard will update as data comes in.")
             st.rerun()
 
-    if st.button("Hard reset"):
-        os.remove("analysis.lock")
+    # if st.button("Hard reset"):
+    #     os.remove("analysis.lock")
 
 
 # Display updating dashboard
