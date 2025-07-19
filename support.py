@@ -231,70 +231,74 @@ def start_analysis(set_progress, update_info=False):
 
     total = len(tickers)
     for i, ticker in tqdm(enumerate(tickers)):
-        set_progress((i + 1) / total)  # update progress externally
-        file_path = f"chart_data/{ticker}.parquet"
-        if os.path.exists(file_path):
-            last_modified = os.path.getmtime(file_path)
-            age_hours = (time.time() - last_modified) / 3600
-            if age_hours < 24:
-                df = pd.read_parquet(file_path)
+        try:
+            set_progress((i + 1) / total)  # update progress externally
+            file_path = f"chart_data/{ticker}.parquet"
+            if os.path.exists(file_path):
+                last_modified = os.path.getmtime(file_path)
+                age_hours = (time.time() - last_modified) / 3600
+                if age_hours < 24:
+                    df = pd.read_parquet(file_path)
+                else:
+                    df = yf.download(ticker, period="1y", interval="1d", progress=False)
             else:
                 df = yf.download(ticker, period="1y", interval="1d", progress=False)
-        else:
-            df = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if df.empty:
-            continue
-        df['RSI'] = compute_rsi(df['Close'])[ticker].values
-        current_rsi = df['RSI'].iloc[-1]
-        current_price = float(df['Close'].iloc[-1])
-        support_levels = find_support_levels(df)
-        fund_score, market_cap = fundamental_snapshot(ticker, update_info=update_info)
-        for level in support_levels:
-            proximity = (current_price - level) / level
-            if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
-                if find_sharp_decline_to_support(df, support_levels) and is_sharp_drop(df):
-                    _, slope = is_sharp_drop(df)
-                    slope_score = abs(slope) * 1000 if slope is not None else 0  # Scale for interpretability
-                    large_cap_bonus = np.log10(market_cap) if market_cap > 0 else 0
+            if df.empty:
+                continue
+            df['RSI'] = compute_rsi(df['Close'])[ticker].values
+            current_rsi = df['RSI'].iloc[-1]
+            current_price = float(df['Close'].iloc[-1])
+            support_levels = find_support_levels(df)
+            fund_score, market_cap = fundamental_snapshot(ticker, update_info=update_info)
+            for level in support_levels:
+                proximity = (current_price - level) / level
+                if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
+                    if find_sharp_decline_to_support(df, support_levels) and is_sharp_drop(df):
+                        _, slope = is_sharp_drop(df)
+                        slope_score = abs(slope) * 1000 if slope is not None else 0  # Scale for interpretability
+                        large_cap_bonus = np.log10(market_cap) if market_cap > 0 else 0
 
-                    # Append each result row
-                    with open("results.csv", "a", newline='') as f:
-                        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
+                        # Append each result row
+                        with open("results.csv", "a", newline='') as f:
+                            writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
 
-                        recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
-                        drop_pct = (recent_high - current_price) / recent_high * 100
-                        # Weighting components more intuitively
-                        rsi_score = max(0, 40 - current_rsi)  # Higher when RSI is lower, capped at 40
-                        drop_score = drop_pct  # Prefer higher drops
-                        proximity_score = max(0, 1 - (proximity / 0.03))  # Linear decay to 0 at 3%
+                            recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
+                            drop_pct = (recent_high - current_price) / recent_high * 100
+                            # Weighting components more intuitively
+                            rsi_score = max(0, 40 - current_rsi)  # Higher when RSI is lower, capped at 40
+                            drop_score = drop_pct  # Prefer higher drops
+                            proximity_score = max(0, 1 - (proximity / 0.03))  # Linear decay to 0 at 3%
 
-                        # Optional: Penalize low-priced tickers
-                        price_score = np.log10(current_price) if current_price > 0 else 0
+                            # Optional: Penalize low-priced tickers
+                            price_score = np.log10(current_price) if current_price > 0 else 0
 
-                        # Combine with tuned weights
-                        technical_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
-                                    price_score * 0.5) + (slope_score * 1.2) + (large_cap_bonus * 0.2)
-                        overall_score = technical_score + fund_score * 25
-                        writer.writerow({
-                            "Ticker": ticker,
-                            "Current Price": round(current_price, 2),
-                            "Support Level": round(level, 2),
-                            "Proximity %": round(proximity * 100, 2),
-                            "RSI": round(current_rsi, 2),
-                            "Market Cap": round(market_cap/1_000_000_000, 2),
-                            "Drop %": round(drop_pct, 2),
-                            "Technical Score": round(technical_score, 2),
-                            "Fundamental Score": round(fund_score, 2) * 25,
-                            "Overall Score": round(overall_score, 2)
-                        })
-                        os.makedirs("chart_data", exist_ok=True)
+                            # Combine with tuned weights
+                            technical_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
+                                        price_score * 0.5) + (slope_score * 1.2) + (large_cap_bonus * 0.2)
+                            overall_score = technical_score + fund_score * 25
+                            writer.writerow({
+                                "Ticker": ticker,
+                                "Current Price": round(current_price, 2),
+                                "Support Level": round(level, 2),
+                                "Proximity %": round(proximity * 100, 2),
+                                "RSI": round(current_rsi, 2),
+                                "Market Cap": round(market_cap/1_000_000_000, 2),
+                                "Drop %": round(drop_pct, 2),
+                                "Technical Score": round(technical_score, 2),
+                                "Fundamental Score": round(fund_score, 2) * 25,
+                                "Overall Score": round(overall_score, 2)
+                            })
+                            os.makedirs("chart_data", exist_ok=True)
 
-                        # 4-hour data (max 60d)
-                        df_4h = yf.download(ticker, period="60d", interval="4h", progress=False)
-                        if not df_4h.empty:
-                            df_4h.to_parquet(f"chart_data/{ticker}_4h.parquet")
-                        df.to_parquet(f"chart_data/{ticker}_1d.parquet")
-                        copy_results_snapshot()
+                            # 4-hour data (max 60d)
+                            df_4h = yf.download(ticker, period="60d", interval="4h", progress=False)
+                            if not df_4h.empty:
+                                df_4h.to_parquet(f"chart_data/{ticker}_4h.parquet")
+                            df.to_parquet(f"chart_data/{ticker}_1d.parquet")
+                            copy_results_snapshot()
+        except Exception as e:
+                print(f"Error processing {ticker}: {e}")
+                continue
 
     copy_results_snapshot()
     if os.path.exists("analysis.lock"):
