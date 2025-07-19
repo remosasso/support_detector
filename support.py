@@ -1,7 +1,7 @@
 import time
 import csv
 import os
-
+import pickle as pkl
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -115,7 +115,7 @@ def copy_results_snapshot():
         df.to_csv("results_stable.csv", index=False)
         print("📄 Copied snapshot to results_stable.csv")
     except Exception as e:
-        print(f"⚠️ Failed to copy results.csv: {e}")
+        print(f"⚠ Failed to copy results.csv: {e}")
 
 import yfinance as yf
 import numpy as np
@@ -135,14 +135,41 @@ def first_value(df: pd.DataFrame, *candidates):
     return np.nan
 
 # ---------- main snapshot -------------------------------------------------
-def fundamental_snapshot(ticker: str, *, freq="yearly") -> dict:
-    t   = yf.Ticker(ticker)
-    inf = t.get_info()
+def fundamental_snapshot(ticker: str, *, freq="yearly", update_info=False) -> dict:
+    ticker_path = f"ticker_data/{ticker}.pkl"
 
-    # transpose so dates → rows, items → columns
-    inc = t.get_income_stmt(freq=freq).T.sort_index(ascending=False)
-    cfs = t.get_cashflow(freq=freq).T.sort_index(ascending=False)
-    bal = t.get_balance_sheet(freq=freq).T.sort_index(ascending=False)
+    # Load from cache if exists
+    if os.path.exists(ticker_path):
+        with open(ticker_path, "rb") as f:
+            cached_data = pkl.load(f)
+        inf = cached_data["info"]
+        inc = cached_data["income_stmt"]
+        cfs = cached_data["cashflow"]
+        bal = cached_data["balance_sheet"]
+    else:
+        t = yf.Ticker(ticker)
+        inf = t.get_info()
+        inc = t.get_income_stmt(freq=freq).T.sort_index(ascending=False)
+        cfs = t.get_cashflow(freq=freq).T.sort_index(ascending=False)
+        bal = t.get_balance_sheet(freq=freq).T.sort_index(ascending=False)
+
+        # Only cache what’s serializable
+        cached_data = {
+            "info": inf,
+            "income_stmt": inc,
+            "cashflow": cfs,
+            "balance_sheet": bal
+        }
+        with open(ticker_path, "wb") as f:
+            pkl.dump(cached_data, f)
+
+    
+    market_cap = inf.get("marketCap", 0)
+
+    # # transpose so dates → rows, items → columns
+    # inc = t.get_income_stmt(freq=freq).T.sort_index(ascending=False)
+    # cfs = t.get_cashflow(freq=freq).T.sort_index(ascending=False)
+    # bal = t.get_balance_sheet(freq=freq).T.sort_index(ascending=False)
 
     revenue = first_value(inc, "TotalRevenue", "Total Revenue")
     op_margin = inf.get("operatingMargins", np.nan)
@@ -176,20 +203,21 @@ def fundamental_snapshot(ticker: str, *, freq="yearly") -> dict:
         nde_ratio < 3,
         rev_cagr_5y > 0.03,
     ])
-    return fund_score
+    return fund_score, market_cap
 
 
-def start_analysis(set_progress):
+def start_analysis(set_progress, update_info=False):
     for f in ["results.csv", "results_stable.csv", "progress.txt"]:
         if os.path.exists(f):
             os.remove(f)
     import shutil
-
+    
     if os.path.exists("chart_data"):
         shutil.rmtree("chart_data")
     os.makedirs("chart_data", exist_ok=True)
+    os.makedirs("ticker_data", exist_ok=True)
     if os.path.exists("analysis.lock"):
-        print("⚠️ Analysis already running. Exiting start_analysis.")
+        print("⚠ Analysis already running. Exiting start_analysis.")
         return
 
     with open("analysis.lock", "w") as f:
@@ -198,7 +226,7 @@ def start_analysis(set_progress):
     # Initialize CSV with header
 
     with open("results.csv", "w", newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI",  "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
+        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
         writer.writeheader()
 
     total = len(tickers)
@@ -220,17 +248,18 @@ def start_analysis(set_progress):
         current_rsi = df['RSI'].iloc[-1]
         current_price = float(df['Close'].iloc[-1])
         support_levels = find_support_levels(df)
-        fund_score = fundamental_snapshot(ticker)
+        fund_score, market_cap = fundamental_snapshot(ticker, update_info=update_info)
         for level in support_levels:
             proximity = (current_price - level) / level
             if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
                 if find_sharp_decline_to_support(df, support_levels) and is_sharp_drop(df):
                     _, slope = is_sharp_drop(df)
                     slope_score = abs(slope) * 1000 if slope is not None else 0  # Scale for interpretability
+                    large_cap_bonus = np.log10(market_cap) if market_cap > 0 else 0
 
                     # Append each result row
                     with open("results.csv", "a", newline='') as f:
-                        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
+                        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
 
                         recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
                         drop_pct = (recent_high - current_price) / recent_high * 100
@@ -244,7 +273,7 @@ def start_analysis(set_progress):
 
                         # Combine with tuned weights
                         technical_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
-                                    price_score * 0.5) + (slope_score * 1.2)
+                                    price_score * 0.5) + (slope_score * 1.2) + (large_cap_bonus * 0.2)
                         overall_score = technical_score + fund_score * 25
                         writer.writerow({
                             "Ticker": ticker,
@@ -252,6 +281,7 @@ def start_analysis(set_progress):
                             "Support Level": round(level, 2),
                             "Proximity %": round(proximity * 100, 2),
                             "RSI": round(current_rsi, 2),
+                            "Market Cap": round(market_cap/1_000_000_000, 2),
                             "Drop %": round(drop_pct, 2),
                             "Technical Score": round(technical_score, 2),
                             "Fundamental Score": round(fund_score, 2) * 25,

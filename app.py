@@ -21,7 +21,7 @@ def try_read_csv(path, retries=3, delay=0.2):
         except pd.errors.EmptyDataError:
             time.sleep(delay)
         except Exception as e:
-            st.warning(f"⚠️ Error reading {path}: {e}")
+            st.warning(f"⚠ Error reading {path}: {e}")
             time.sleep(delay)
     return pd.DataFrame()
 # Initialize state
@@ -61,9 +61,9 @@ with st.sidebar:
         st.sidebar.success("✅ No analysis running.")
 
     # Display live progress
-    if st.button("▶️ (Re-)Start Analysis in Background", disabled=running):
+    if st.button("▶ (Re-)Start Analysis in Background", disabled=running):
         if os.path.exists("analysis.lock"):
-            st.warning("⚠️ Analysis already running. Please wait or delete 'analysis.lock' to force restart.")
+            st.warning("⚠ Analysis already running. Please wait or delete 'analysis.lock' to force restart.")
         else:
             st.session_state.analysis_started = False
             st.session_state.progress = 0.0
@@ -106,7 +106,7 @@ if os.path.exists("results_stable.csv"):
         st.subheader("📈 Stocks Near Major Support (Live)")
         st.dataframe(
             sorted_df[
-                ["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"]],
+                ["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"]],
             use_container_width=True
         )
 
@@ -205,7 +205,7 @@ if os.path.exists("results_stable.csv"):
             except Exception as e:
                 st.error(f"Failed to render chart: {e}")
         else:
-            st.warning(f"No OHLC data found at `{chart_path}`")
+            st.warning(f"No OHLC data found at {chart_path}")
 
         fig2 = px.bar(
             sorted_df.head(20),
@@ -229,5 +229,4 @@ if st.session_state.analysis_started:
     st.rerun()
 
 elif os.path.exists("progress.txt") and get_progress_file() >= 1.0:
-    st.sidebar.success("✅ Analysis complete!")
-
+    st.sidebar.success("✅ Analysis complete!")
