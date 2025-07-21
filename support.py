@@ -224,6 +224,32 @@ def compute_trend_score(df):
 
     return long_term_score + recent_trend_score
 
+def classify_drop_type(df, support_levels):
+    if df.empty or len(df) < 60:
+        return "unknown"
+
+    close = df['Close'].iloc[-30:]
+    if len(close) < 6:
+        return "unknown"
+
+    # 1. Slope speed (recent vs longer)
+    slope_5 = np.polyfit(range(5), close[-5:].values, 1)[0].item()
+    slope_30 = np.polyfit(range(30), close.values, 1)[0].item()
+    slope_ratio = abs(slope_5) / (abs(slope_30) + 1e-6)
+
+    # 2. Volume spike
+    vol_5 = float(df['Volume'].iloc[-5:].mean())
+    vol_60 = float(df['Volume'].iloc[-60:].mean())
+    volume_ratio = vol_5 / (vol_60 + 1e-6)
+
+    # Heuristics
+    if slope_ratio > 2.5 and volume_ratio > 1.4:
+        return "Overreaction"
+    elif slope_30 < 0 and slope_5 < 0:
+        return "Structural"
+    return "unclear"
+
+
 def start_analysis(set_progress, update_info=False):
     for f in ["results.csv", "results_stable.csv", "progress.txt"]:
         if os.path.exists(f):
@@ -244,7 +270,7 @@ def start_analysis(set_progress, update_info=False):
     # Initialize CSV with header
 
     with open("results.csv", "w", newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
+        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Drop Type", "Technical Score", "Fundamental Score", "Overall Score"])
         writer.writeheader()
 
     total = len(tickers)
@@ -280,8 +306,8 @@ def start_analysis(set_progress, update_info=False):
 
                         # Append each result row
                         with open("results.csv", "a", newline='') as f:
-                            writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
-
+                            writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Drop Type", "Technical Score", "Fundamental Score", "Overall Score"])
+                            drop_type = classify_drop_type(df, support_levels)
                             recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
                             drop_pct = (recent_high - current_price) / recent_high * 100
                             # Weighting components more intuitively
@@ -296,8 +322,12 @@ def start_analysis(set_progress, update_info=False):
                             technical_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
                                         price_score * 0.5) + (slope_score * 1.2) + (large_cap_bonus * 0.2)
                             overall_score = technical_score + fund_score * 25
-                            overall_score += trend_score * 100  # You can tune this weight
 
+                            overall_score += trend_score * 100  # You can tune this weight
+                            if drop_type == "Overreaction":
+                                overall_score *= 2
+                            elif drop_type == "Structural":
+                                overall_score *= 0.5
                             writer.writerow({
                                 "Ticker": ticker,
                                 "Current Price": round(current_price, 2),
@@ -307,6 +337,7 @@ def start_analysis(set_progress, update_info=False):
                                 "Market Cap": round(market_cap/1_000_000_000, 2),
                                 "Trend Score": trend_score,
                                 "Drop %": round(drop_pct, 2),
+                                "Drop Type": drop_type,
                                 "Technical Score": round(technical_score, 2),
                                 "Fundamental Score": round(fund_score, 2) * 25,
                                 "Overall Score": round(overall_score, 2)

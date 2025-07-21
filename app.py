@@ -106,7 +106,7 @@ if os.path.exists("results_stable.csv"):
         st.subheader("📈 Stocks Near Major Support (Live)")
         st.dataframe(
             sorted_df[
-                ["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"]],
+                ["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Drop Type", "Technical Score", "Fundamental Score", "Overall Score"]],
             use_container_width=True
         )
 
