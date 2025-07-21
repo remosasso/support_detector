@@ -205,6 +205,24 @@ def fundamental_snapshot(ticker: str, *, freq="yearly", update_info=False) -> di
     ])
     return fund_score, market_cap
 
+def compute_trend_score(df):
+    if df.empty or len(df) < 250:
+        return 0
+
+    # Long-term log return (5-year)
+    start_price = df['Close'].iloc[0]
+    end_price = df['Close'].iloc[-1]
+    log_return_5y = np.log(end_price / start_price)
+    long_term_score = int(log_return_5y > np.log(1.8))  # e.g. > 80% growth
+
+    # Recent 2-year trend
+    df_2y = df.iloc[-504:] if len(df) >= 504 else df
+    y = df_2y['Close'].values
+    x = np.arange(len(y))
+    slope = np.polyfit(x, y, 1)[0]
+    recent_trend_score = int(slope > 0.1)
+
+    return long_term_score + recent_trend_score
 
 def start_analysis(set_progress, update_info=False):
     for f in ["results.csv", "results_stable.csv", "progress.txt"]:
@@ -226,7 +244,7 @@ def start_analysis(set_progress, update_info=False):
     # Initialize CSV with header
 
     with open("results.csv", "w", newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
+        writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
         writer.writeheader()
 
     total = len(tickers)
@@ -240,9 +258,9 @@ def start_analysis(set_progress, update_info=False):
                 if age_hours < 24:
                     df = pd.read_parquet(file_path)
                 else:
-                    df = yf.download(ticker, period="1y", interval="1d", progress=False)
+                    df = yf.download(ticker, period="5y", interval="1d", progress=False)
             else:
-                df = yf.download(ticker, period="1y", interval="1d", progress=False)
+                df = yf.download(ticker, period="5y", interval="1d", progress=False)
             if df.empty:
                 continue
             df['RSI'] = compute_rsi(df['Close'])[ticker].values
@@ -250,6 +268,8 @@ def start_analysis(set_progress, update_info=False):
             current_price = float(df['Close'].iloc[-1])
             support_levels = find_support_levels(df)
             fund_score, market_cap = fundamental_snapshot(ticker, update_info=update_info)
+            trend_score = compute_trend_score(df)
+
             for level in support_levels:
                 proximity = (current_price - level) / level
                 if 0 < proximity < 0.03 and current_rsi < 40 and current_price > 9:
@@ -260,7 +280,7 @@ def start_analysis(set_progress, update_info=False):
 
                         # Append each result row
                         with open("results.csv", "a", newline='') as f:
-                            writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
+                            writer = csv.DictWriter(f, fieldnames=["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"])
 
                             recent_high = df['Close'].rolling(window=30).max().iloc[-1].item()
                             drop_pct = (recent_high - current_price) / recent_high * 100
@@ -276,6 +296,8 @@ def start_analysis(set_progress, update_info=False):
                             technical_score = (rsi_score * 0.6) + (drop_score * 0.6) + (proximity_score * 0.3) + (
                                         price_score * 0.5) + (slope_score * 1.2) + (large_cap_bonus * 0.2)
                             overall_score = technical_score + fund_score * 25
+                            overall_score += trend_score * 100  # You can tune this weight
+
                             writer.writerow({
                                 "Ticker": ticker,
                                 "Current Price": round(current_price, 2),
@@ -283,6 +305,7 @@ def start_analysis(set_progress, update_info=False):
                                 "Proximity %": round(proximity * 100, 2),
                                 "RSI": round(current_rsi, 2),
                                 "Market Cap": round(market_cap/1_000_000_000, 2),
+                                "Trend Score": trend_score,
                                 "Drop %": round(drop_pct, 2),
                                 "Technical Score": round(technical_score, 2),
                                 "Fundamental Score": round(fund_score, 2) * 25,

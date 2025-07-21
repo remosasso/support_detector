@@ -106,15 +106,16 @@ if os.path.exists("results_stable.csv"):
         st.subheader("📈 Stocks Near Major Support (Live)")
         st.dataframe(
             sorted_df[
-                ["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"]],
+                ["Ticker", "Current Price", "Support Level", "Proximity %", "RSI", "Market Cap", "Trend Score", "Drop %", "Technical Score", "Fundamental Score", "Overall Score"]],
             use_container_width=True
         )
 
         ## dropdown for tickers
         ticker = st.selectbox("Select Ticker", sorted_df["Ticker"].unique(), index=0, key=f"live_tick_").upper()
         # Time range
-        range_option = st.selectbox("Select Time Range", ["1Y", "6M", "3M", "1M"], key=f"live_range_")
+        range_option = st.selectbox("Select Time Range", ["5Y", "1Y", "6M", "3M", "1M"], key=f"live_range_")
         period_map_days = {
+            "5Y": 1260,
             "1Y": 252,
             "6M": 126,
             "3M": 63,
