@@ -1,128 +1,156 @@
+
+from tickers import us_ticker_dict, eu_ticker_dict
+
+tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
+
+# Enhanced swing analysis with multiple timeframes
+
 import yfinance as yf
 import pandas as pd
 import ta
-import numpy as np
-import time
 import csv
 import os
-import pickle as pkl
 from tqdm import tqdm
-from tickers import us_ticker_dict
-
-tickers = list(us_ticker_dict.keys())
-
-
-def compute_indicators(df, ticker):
+# tickers = ['AMBP', "IBM", "BJRI"]
+def compute_indicators_multi_timeframe(df_4h, df_1d, ticker):
     """
-    Compute technical indicators for swing trading analysis
+    Compute indicators for both timeframes and combine insights
     """
-    if df.empty:
-        return df
+    indicators = {}
 
-    close = df['Close'][ticker]
-    high = df['High'][ticker]
-    low = df['Low'][ticker]
-    volume = df['Volume'][ticker]
+    # 4H timeframe indicators (for short-term signals)
+    if not df_4h.empty:
+        close_4h = df_4h['Close'][ticker]
+        high_4h = df_4h['High'][ticker]
+        low_4h = df_4h['Low'][ticker]
+        volume_4h = df_4h['Volume'][ticker]
 
-    # Technical indicators
-    df['RSI'] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+        indicators['RSI_4H'] = ta.momentum.RSIIndicator(close=close_4h, window=14).rsi()
+        macd_4h = ta.trend.MACD(close=close_4h)
+        indicators['MACD_4H'] = macd_4h.macd()
+        indicators['MACD_signal_4H'] = macd_4h.macd_signal()
+        indicators['VWAP_4H'] = ta.volume.VolumeWeightedAveragePrice(
+            high=high_4h, low=low_4h, close=close_4h, volume=volume_4h
+        ).vwap
+        indicators['MA50_4H'] = close_4h.rolling(window=50).mean()
+        indicators['Volume_MA_4H'] = volume_4h.rolling(window=20).mean()
+        indicators['Volume_Ratio_4H'] = volume_4h / indicators['Volume_MA_4H']
+        indicators['Support_20_4H'] = close_4h.rolling(window=20).min()
+        indicators['Resistance_20_4H'] = close_4h.rolling(window=20).max()
 
-    macd = ta.trend.MACD(close=close)
-    df['MACD'] = macd.macd()
-    df['MACD_signal'] = macd.macd_signal()
+        # Add to 4H dataframe
+        for key, value in indicators.items():
+            df_4h[key] = value
 
-    df['VWAP'] = ta.volume.VolumeWeightedAveragePrice(
-        high=high, low=low, close=close, volume=volume
-    ).vwap
+    # 1D timeframe indicators (for trend confirmation)
+    if not df_1d.empty:
+        close_1d = df_1d['Close'][ticker]
+        high_1d = df_1d['High'][ticker]
+        low_1d = df_1d['Low'][ticker]
+        volume_1d = df_1d['Volume'][ticker]
 
-    df['MA200'] = close.rolling(window=200).mean()  # 200-period MA
-    df['Support_20'] = close.rolling(window=20).min()  # 20-period support
-    df['Resistance_20'] = close.rolling(window=20).max()  # 20-period resistance
+        df_1d['RSI_1D'] = ta.momentum.RSIIndicator(close=close_1d, window=14).rsi()
+        macd_1d = ta.trend.MACD(close=close_1d)
+        df_1d['MACD_1D'] = macd_1d.macd()
+        df_1d['MACD_signal_1D'] = macd_1d.macd_signal()
+        df_1d['VWAP_1D'] = ta.volume.VolumeWeightedAveragePrice(
+            high=high_1d, low=low_1d, close=close_1d, volume=volume_1d
+        ).vwap
+        df_1d['MA200'] = close_1d.rolling(window=200).mean()  # Long-term trend
+        df_1d['MA50_1D'] = close_1d.rolling(window=50).mean()
+        df_1d['Support_20_1D'] = close_1d.rolling(window=20).min()
+        df_1d['Resistance_20_1D'] = close_1d.rolling(window=20).max()
 
-    # Additional indicators for scoring
-    df['MA50'] = close.rolling(window=50).mean()
-    df['Volume_MA'] = volume.rolling(window=20).mean()
-    df['Volume_Ratio'] = volume / df['Volume_MA']
+        df_1d['Volume_MA_1D'] = volume_1d.rolling(window=20).mean()
+        df_1d['Volume_Ratio_1D'] = volume_1d / df_1d['Volume_MA_1D']
 
-    return df
+    return df_4h, df_1d
 
 
-def calculate_swing_score(row, ticker):
+def calculate_multi_timeframe_score(last_4h, last_1d, ticker):
     """
-    Calculate a comprehensive swing trading score
+    Calculate swing score using both timeframes
     """
     score = 0
 
-    # RSI scoring (lower is better for oversold bounce)
-    rsi_val = row['RSI'].item()
-    if rsi_val < 20:
+    # 4H RSI (primary signal - more sensitive)
+    rsi_4h = last_4h['RSI_4H'].item()
+    if rsi_4h < 20:
+        score += 50
+    elif rsi_4h < 25:
         score += 40
-    elif rsi_val < 25:
+    elif rsi_4h < 30:
         score += 30
-    elif rsi_val < 30:
+    elif rsi_4h < 35:  # Slightly higher threshold for 4H
+        score += 10
+
+    # 1D RSI (confirmation - trend context)
+    if 'RSI_1D' in last_1d.index:
+        rsi_1d = last_1d['RSI_1D'].item()
+        if rsi_1d < 40:  # 1D can be less oversold
+            score += 15
+        elif rsi_1d < 50:
+            score += 10
+        elif rsi_1d < 31:
+            score += 20
+
+    # MACD signals (combine both timeframes)
+    # 4H MACD for entry timing
+    if last_4h['MACD_4H'].item() > last_4h['MACD_signal_4H'].item():
         score += 20
 
-    # MACD cross scoring
-    if row['MACD'].item() > row['MACD_signal'].item():
-        score += 25
+    # 1D MACD for trend confirmation
+    if 'MACD_1D' in last_1d.index and 'MACD_signal_1D' in last_1d.index:
+        if last_1d['MACD_1D'].item() > last_1d['MACD_signal_1D'].item():
+            score += 15
 
-    # Distance from VWAP (closer = better entry)
-    close_val = row['Close'][ticker]
-    vwap_val = row['VWAP'].item()
-    vwap_distance = abs(close_val - vwap_val) / vwap_val
-    if vwap_distance < 0.02:  # within 2%
-        score += 20
-    elif vwap_distance < 0.05:  # within 5%
-        score += 10
-
-    # Trend strength (distance above MA200)
-    ma200_val = row['MA200'].item()
-    ma200_distance = (close_val - ma200_val) / ma200_val
-    if ma200_distance > 0.1:  # 10% above MA200
+    # VWAP analysis (use 4H for entry precision)
+    close_val = last_4h['Close'][ticker]
+    vwap_4h = last_4h['VWAP_4H'].item()
+    vwap_distance = abs(close_val - vwap_4h) / vwap_4h
+    if vwap_distance < 0.01:  # Very close to VWAP
         score += 15
-    elif ma200_distance > 0.05:  # 5% above MA200
+    elif vwap_distance < 0.02:  # Within 2%
         score += 10
+    elif vwap_distance < 0.05:  # Within 5%
+        score += 5
 
-    # Volume confirmation
-    vol_ratio = row['Volume_Ratio'].item()
-    if vol_ratio > 1.5:  # Above average volume
-        score += 10
+    # Long-term trend (1D MA200)
+    if 'MA200' in last_1d.index:
+        ma200_val = last_1d['MA200'].item()
+        ma200_distance = (close_val - ma200_val) / ma200_val
+        if ma200_distance > 0.15:  # Strong uptrend
+            score += 5
+        elif ma200_distance > 0.1:  # Moderate uptrend
+            score += 2.5
+        elif ma200_distance > 0.05:  # Weak uptrend
+            score += 1
 
-    # Support proximity
-    support_val = row['Support_20'].item()
-    support_distance = (close_val - support_val) / support_val
-    if support_distance < 0.05:  # within 5% of support
-        score += 15
+    # Volume confirmation (prefer 1D for significance)
+    if 'Volume_Ratio_1D' in last_1d.index:
+        vol_ratio_1d = last_1d['Volume_Ratio_1D'].item()
+        if vol_ratio_1d > 2.0:  # Very high volume
+            score += 5
+        elif vol_ratio_1d > 1.5:  # High volume
+            score += 2.5
+
+    # Support proximity (1D support levels)
+    if 'Support_20_1D' in last_1d.index:
+        support_val = last_1d['Support_20_1D'].item()
+        support_distance = (close_val - support_val) / support_val
+        if support_distance < 0.03:  # Very close to support
+            score += 20
+        elif support_distance < 0.08:  # Near support
+            score += 15
 
     return score
 
 
-def copy_results_snapshot():
-    """Copy results to stable file for dashboard reading"""
-    try:
-        import shutil
-        shutil.copyfile("swing_results.csv", "swing_results_stable.csv")
-        df = pd.read_csv("swing_results_stable.csv")
-        df = df.drop_duplicates(subset="Ticker", keep="last")  # Keep latest entry per ticker
-        df.to_csv("swing_results_stable.csv", index=False)
-        print("📄 Copied snapshot to swing_results_stable.csv")
-    except Exception as e:
-        print(f"⚠ Failed to copy swing_results.csv: {e}")
-
-
-def analyze_swing_opportunities(set_progress, update_info=False):
+def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
     """
-    Main analysis function for swing trading opportunities
+    Enhanced analysis with multiple timeframes
     """
-    # Cleanup old files
-    for f in ["swing_results.csv", "swing_results_stable.csv", "swing_progress.txt"]:
-        if os.path.exists(f):
-            os.remove(f)
-
-    """
-    Main analysis function for swing trading opportunities
-    """
-    # Cleanup old files
+    # Cleanup and setup
     for f in ["swing_results.csv", "swing_results_stable.csv", "swing_progress.txt"]:
         if os.path.exists(f):
             os.remove(f)
@@ -139,13 +167,17 @@ def analyze_swing_opportunities(set_progress, update_info=False):
 
     with open("swing_analysis.lock", "w") as f:
         f.write("running")
-        print("Starting swing analysis...")
+        print("Starting multi-timeframe swing analysis...")
 
-    # Initialize CSV with headers
+    # Enhanced fieldnames for multi-timeframe analysis
     fieldnames = [
-        "Ticker", "Close", "RSI", "MACD", "MACD_Signal", "VWAP",
-        "MA200", "Support_20", "MACD_Cross_Up", "Volume_Ratio",
-        "Swing_Score", "Entry_Quality"
+        "Ticker", "Close",
+        "RSI_4H", "RSI_1D",
+        "MACD_4H", "MACD_Signal_4H", "MACD_1D", "MACD_Signal_1D",
+        "VWAP_4H", "VWAP_1D", "MA200", "Support_20_1D", "Support_20_4H",
+        "MACD_Cross_4H", "MACD_Cross_1D",
+        "Volume_Ratio_4H", "Volume_Ratio_1D",
+        "Swing_Score", "Entry_Quality", "Timeframe_Alignment"
     ]
 
     with open("swing_results.csv", "w", newline='') as f:
@@ -153,37 +185,57 @@ def analyze_swing_opportunities(set_progress, update_info=False):
         writer.writeheader()
 
     results = []
-    # tickers = ['AMBP']
-
     total = len(tickers)
+
     for i, ticker in tqdm(enumerate(tickers)):
         try:
             set_progress((i + 1) / total)
 
-            # Download data
-            df = yf.download(ticker, interval='4h', period='6mo', auto_adjust=True, progress=False)
+            # Download both timeframes
+            df_4h = yf.download(ticker, interval='4h', period='6mo', auto_adjust=True, progress=False)
+            df_1d = yf.download(ticker, interval='1d', period='2y', auto_adjust=True, progress=False)
 
-            if df.empty:
+            if df_4h.empty or df_1d.empty:
                 continue
 
-            # Compute indicators
-            df = compute_indicators(df, ticker).dropna()
+            # Compute indicators for both timeframes
+            df_4h, df_1d = compute_indicators_multi_timeframe(df_4h, df_1d, ticker)
 
-            if df.empty:
+            # Get latest data points
+            df_4h = df_4h.dropna()
+            df_1d = df_1d.dropna()
+
+            if df_4h.empty or df_1d.empty:
                 continue
 
-            last = df.iloc[-1]
+            last_4h = df_4h.iloc[-1]
+            last_1d = df_1d.iloc[-1]
 
-            # Core swing trading conditions
-            if not (last['Close'][ticker] > last['MA200'].item() and
-                    last['RSI'].item() < 30 and
-                    last['Close'][ticker] < last['VWAP'].item()):
+            # Multi-timeframe screening conditions
+            close_val = last_4h['Close'][ticker]
+
+            # Primary conditions (must meet all)
+            conditions = [
+                close_val > last_1d['MA200'].item(),  # Above long-term trend
+                last_4h['RSI_4H'].item() < 35,  # 4H oversold (slightly higher threshold)
+                close_val < last_4h['VWAP_4H'].item()  # Below VWAP for entry
+            ]
+
+            # Secondary conditions (nice to have)
+            secondary_score = 0
+            if 'RSI_1D' in last_1d.index and last_1d['RSI_1D'].item() < 50:
+                secondary_score += 1
+            if last_4h['MACD_4H'].item() > last_4h['MACD_signal_4H'].item():
+                secondary_score += 1
+
+            # Must meet primary conditions + at least 1 secondary
+            if not all(conditions) or secondary_score == 0:
                 continue
 
-            # Calculate swing score
-            swing_score = calculate_swing_score(last, ticker)
+            # Calculate multi-timeframe score
+            swing_score = calculate_multi_timeframe_score(last_4h, last_1d, ticker)
 
-            # Determine entry quality
+            # Determine entry quality and timeframe alignment
             if swing_score >= 80:
                 entry_quality = "Excellent"
             elif swing_score >= 60:
@@ -193,19 +245,35 @@ def analyze_swing_opportunities(set_progress, update_info=False):
             else:
                 entry_quality = "Poor"
 
+            # Check timeframe alignment
+            rsi_alignment = "Aligned" if (last_4h['RSI_4H'].item() < 35 and
+                                          ('RSI_1D' not in last_1d.index or last_1d[
+                                              'RSI_1D'].item() < 50)) else "Divergent"
+
             result = {
                 'Ticker': ticker,
-                'Close': round(last['Close'][ticker].item(), 2),
-                'RSI': round(last['RSI'].item(), 2),
-                'MACD': round(last['MACD'].item(), 4),
-                'MACD_Signal': round(last['MACD_signal'].item(), 4),
-                'VWAP': round(last['VWAP'].item(), 2),
-                'MA200': round(last['MA200'].item(), 2),
-                'Support_20': round(last['Support_20'].item(), 2),
-                'MACD_Cross_Up': last['MACD'].item() > last['MACD_signal'].item(),
-                'Volume_Ratio': round(last['Volume_Ratio'].item(), 2),
+                'Close': round(close_val.item(), 2),
+                'RSI_4H': round(last_4h['RSI_4H'].item(), 1),
+                'RSI_1D': round(last_1d.get('RSI_1D', 0).item() if 'RSI_1D' in last_1d.index else 0, 1),
+                'MACD_4H': round(last_4h['MACD_4H'].item(), 4),
+                'MACD_Signal_4H': round(last_4h['MACD_signal_4H'].item(), 4),
+                'MACD_1D': round(last_1d.get('MACD_1D', 0).item() if 'MACD_1D' in last_1d.index else 0, 4),
+                'MACD_Signal_1D': round(
+                    last_1d.get('MACD_signal_1D', 0).item() if 'MACD_signal_1D' in last_1d.index else 0, 4),
+                'VWAP_4H': round(last_4h['VWAP_4H'].item(), 2),
+                'VWAP_1D': round(last_1d.get('VWAP_1D', 0).item() if 'VWAP_1D' in last_1d.index else 0, 2),
+                'MA200': round(last_1d['MA200'].item(), 2),
+                'Support_20_4H': round(last_4h['Support_20_4H'].item(), 2),
+                'Support_20_1D': round(last_1d['Support_20_1D'].item(), 2),
+                'MACD_Cross_4H': last_4h['MACD_4H'].item() > last_4h['MACD_signal_4H'].item(),
+                'MACD_Cross_1D': (last_1d.get('MACD_1D', 0).item() > last_1d.get('MACD_signal_1D',
+                                                                                 0).item()) if 'MACD_1D' in last_1d.index else False,
+                'Volume_Ratio_4H': round(last_4h['Volume_Ratio_4H'].item(), 1),
+                'Volume_Ratio_1D': round(
+                    last_1d.get('Volume_Ratio_1D', 0).item() if 'Volume_Ratio_1D' in last_1d.index else 0, 1),
                 'Swing_Score': round(swing_score, 1),
-                'Entry_Quality': entry_quality
+                'Entry_Quality': entry_quality,
+                'Timeframe_Alignment': rsi_alignment
             }
 
             results.append(result)
@@ -215,41 +283,40 @@ def analyze_swing_opportunities(set_progress, update_info=False):
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writerow(result)
 
-            # Save chart data
-            df.to_parquet(f"swing_chart_data/{ticker}_4h.parquet")
+            # Save chart data (both timeframes)
+            df_4h.to_parquet(f"swing_chart_data/{ticker}_4h.parquet")
+            df_1d.to_parquet(f"swing_chart_data/{ticker}_1d.parquet")
 
-            # Also save daily data for longer-term view
-            df_daily = yf.download(ticker, period="1y", interval="1d", progress=False)
-            if not df_daily.empty:
-                df_daily = compute_indicators(df_daily, ticker)
-                df_daily.to_parquet(f"swing_chart_data/{ticker}_1d.parquet")
+            # Copy snapshot for dashboard
             copy_results_snapshot()
 
         except Exception as e:
             print(f"Error processing {ticker}: {e}")
             continue
 
-    # Create stable results
-    try:
-        import shutil
-        shutil.copyfile("swing_results.csv", "swing_results_stable.csv")
-        print("📄 Created stable results file")
-    except Exception as e:
-        print(f"⚠ Failed to create stable results: {e}")
+    # Final cleanup
     copy_results_snapshot()
-
-    # Cleanup
     if os.path.exists("swing_analysis.lock"):
         os.remove("swing_analysis.lock")
 
-    print(f"✅ Analysis complete. Found {len(results)} swing opportunities.")
+    print(f"✅ Multi-timeframe analysis complete. Found {len(results)} swing opportunities.")
+
+
+def copy_results_snapshot():
+    """Copy results to stable file for dashboard reading"""
+    try:
+        import shutil
+        shutil.copyfile("swing_results.csv", "swing_results_stable.csv")
+        df = pd.read_csv("swing_results_stable.csv")
+        df = df.drop_duplicates(subset="Ticker", keep="last")
+        df.to_csv("swing_results_stable.csv", index=False)
+    except Exception as e:
+        print(f"⚠ Failed to copy swing_results.csv: {e}")
 
 
 def start_swing_analysis(set_progress, update_info=False):
-    """Wrapper function to start the analysis"""
-    analyze_swing_opportunities(set_progress, update_info)
-
-
+    """Wrapper function to start the enhanced analysis"""
+    analyze_swing_opportunities_multi_tf(set_progress, update_info)
 # Debug mode
 DEBUG = False
 if DEBUG:
