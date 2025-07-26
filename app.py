@@ -226,7 +226,7 @@ if os.path.exists("swing_results_stable.csv"):
             if interval == "4H":
                 time_range = st.selectbox("Time Range", ["6M", "3M", "1M"], index=0)
             else:
-                time_range = st.selectbox("Time Range", ["2Y", "1Y", "6M", "3M", "1M"], index=0)
+                time_range = st.selectbox("Time Range", ["5Y", "2Y", "1Y", "6M", "3M", "1M"], index=0)
 
         # Load chart data
         chart_file = f"swing_chart_data/{ticker}_{interval.lower()}.parquet"
@@ -247,13 +247,12 @@ if os.path.exists("swing_results_stable.csv"):
                         chart_data["Date"] = pd.to_datetime(chart_data.index)
                 else:
                     chart_data["Date"] = pd.to_datetime(chart_data.index).tz_localize("UTC")
-                st.write(f"Raw data points for {interval}: {len(chart_data)}")
 
                 # Filter by time range
                 if interval == "4H":
                     range_days = {"6M": 180, "3M": 90, "1M": 30}
                 else:
-                    range_days = {"2Y": 730, "1Y": 365, "6M": 180, "3M": 90, "1M": 30}
+                    range_days = {"5Y": 1825 ,"2Y": 730, "1Y": 365, "6M": 180, "3M": 90, "1M": 30}
 
                 cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=range_days[time_range])
                 chart_data = chart_data[chart_data["Date"] >= cutoff]

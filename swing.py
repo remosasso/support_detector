@@ -87,12 +87,12 @@ def calculate_multi_timeframe_score(last_4h, last_1d, ticker):
     # 1D RSI (confirmation - trend context)
     if 'RSI_1D' in last_1d.index:
         rsi_1d = last_1d['RSI_1D'].item()
-        if rsi_1d < 40:  # 1D can be less oversold
+        if rsi_1d < 30:
+            score += 30  # Strong oversold
+        elif rsi_1d < 40:
             score += 15
         elif rsi_1d < 50:
-            score += 10
-        elif rsi_1d < 31:
-            score += 20
+            score += 5
 
     # MACD signals (combine both timeframes)
     # 4H MACD for entry timing
@@ -146,6 +146,38 @@ def calculate_multi_timeframe_score(last_4h, last_1d, ticker):
     return score
 
 
+def is_structurally_bullish(df_1d):
+    """
+    Checks if long-term structure is bullish:
+    - MA200 trending up
+    - Current close above both MA200 and MA50
+    - 6-month price change positive
+    """
+    if df_1d.empty or len(df_1d) < 120:
+        return False  # Not enough data
+
+    close_series = df_1d['Close']
+    ma200 = df_1d['MA200']
+    ma50 = df_1d['MA50_1D']
+
+    # Trend slope of MA200 over last 3 months
+    recent_ma200 = ma200[-60:]
+    slope = (recent_ma200.iloc[-1].item() - recent_ma200.iloc[0].item()) / recent_ma200.iloc[0].item()
+
+    # Price structure
+    recent_close = close_series.iloc[-1].item()
+    prev_close = close_series.iloc[-120].item() # ~6 months ago
+
+    print(f"Recent Close: {recent_close}, MA200: {ma200.iloc[-1].item()}, MA50: {ma50.iloc[-1].item()}, Slope: {slope}")
+
+
+    return (
+            slope > 0.02 and
+            recent_close > ma200.iloc[-1].item() and
+            recent_close > prev_close
+    )
+
+
 def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
     """
     Enhanced analysis with multiple timeframes
@@ -185,15 +217,16 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
         writer.writeheader()
 
     results = []
-    total = len(tickers)
+    # tickers = ["GNE", "XP", "XYF", "AMBP", "TIMB", "IBM", "FCFS", "PM", "XP", "SARO", "JFIN", "LIGHT.AS", "FTK"]
 
+    total = len(tickers)
     for i, ticker in tqdm(enumerate(tickers)):
         try:
             set_progress((i + 1) / total)
 
             # Download both timeframes
             df_4h = yf.download(ticker, interval='4h', period='6mo', auto_adjust=True, progress=False)
-            df_1d = yf.download(ticker, interval='1d', period='2y', auto_adjust=True, progress=False)
+            df_1d = yf.download(ticker, interval='1d', period='5y', auto_adjust=True, progress=False)
 
             if df_4h.empty or df_1d.empty:
                 continue
@@ -213,13 +246,27 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
 
             # Multi-timeframe screening conditions
             close_val = last_4h['Close'][ticker]
+            close_val_1d = last_1d['Close'][ticker]
+            ma200_now = last_1d['MA200'].item()
+            ma200_prev = df_1d.iloc[-5]['MA200'].item()
 
             # Primary conditions (must meet all)
             conditions = [
-                close_val > last_1d['MA200'].item(),  # Above long-term trend
+                close_val_1d > last_1d['MA200'].item(),  # Above long-term trend
                 last_4h['RSI_4H'].item() < 35,  # 4H oversold (slightly higher threshold)
-                close_val < last_4h['VWAP_4H'].item()  # Below VWAP for entry
+                close_val < last_4h['VWAP_4H'].item(),  # Below VWAP for entry,
+                ma200_now > ma200_prev,  # MA200 is declining
+                is_structurally_bullish(df_1d)  # Long-term structure is bullish
             ]
+            if len(df_1d) >= 250:
+
+                price_1y_ago = df_1d['Close'].iloc[-750].item()
+                if close_val < price_1y_ago:
+                    print(f"⚠ {ticker} still below 1Y-ago price, skipping.")
+                    continue
+            if ma200_now < ma200_prev:
+                print("⚠ MA200 is declining, skipping ticker:", ticker)
+            print(conditions)
 
             # Secondary conditions (nice to have)
             secondary_score = 0
