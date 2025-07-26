@@ -221,7 +221,7 @@ if os.path.exists("swing_results_stable.csv"):
         # Time range and interval selection
         col1, col2 = st.columns(2)
         with col1:
-            interval = st.selectbox("Interval", ["4H", "1D"], index=0)
+            interval = st.selectbox("Interval", ["1D", "4H"], index=0)
         with col2:
             if interval == "4H":
                 time_range = st.selectbox("Time Range", ["6M", "3M", "1M"], index=0)
