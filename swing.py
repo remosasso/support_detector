@@ -1,3 +1,4 @@
+import time
 
 from tickers import us_ticker_dict, eu_ticker_dict
 
@@ -20,10 +21,10 @@ def compute_indicators_multi_timeframe(df_4h, df_1d, ticker):
 
     # 4H timeframe indicators (for short-term signals)
     if not df_4h.empty:
-        close_4h = df_4h['Close'][ticker]
-        high_4h = df_4h['High'][ticker]
-        low_4h = df_4h['Low'][ticker]
-        volume_4h = df_4h['Volume'][ticker]
+        close_4h = df_4h['Close']
+        high_4h = df_4h['High']
+        low_4h = df_4h['Low']
+        volume_4h = df_4h['Volume']
 
         indicators['RSI_4H'] = ta.momentum.RSIIndicator(close=close_4h, window=14).rsi()
         macd_4h = ta.trend.MACD(close=close_4h)
@@ -44,10 +45,10 @@ def compute_indicators_multi_timeframe(df_4h, df_1d, ticker):
 
     # 1D timeframe indicators (for trend confirmation)
     if not df_1d.empty:
-        close_1d = df_1d['Close'][ticker]
-        high_1d = df_1d['High'][ticker]
-        low_1d = df_1d['Low'][ticker]
-        volume_1d = df_1d['Volume'][ticker]
+        close_1d = df_1d['Close']
+        high_1d = df_1d['High']
+        low_1d = df_1d['Low']
+        volume_1d = df_1d['Volume']
 
         df_1d['RSI_1D'] = ta.momentum.RSIIndicator(close=close_1d, window=14).rsi()
         macd_1d = ta.trend.MACD(close=close_1d)
@@ -105,7 +106,7 @@ def calculate_multi_timeframe_score(last_4h, last_1d, ticker):
             score += 15
 
     # VWAP analysis (use 4H for entry precision)
-    close_val = last_4h['Close'][ticker]
+    close_val = last_4h['Close']
     vwap_4h = last_4h['VWAP_4H'].item()
     vwap_distance = abs(close_val - vwap_4h) / vwap_4h
     if vwap_distance < 0.01:  # Very close to VWAP
@@ -168,7 +169,7 @@ def is_structurally_bullish(df_1d):
     recent_close = close_series.iloc[-1].item()
     prev_close = close_series.iloc[-120].item() # ~6 months ago
 
-    print(f"Recent Close: {recent_close}, MA200: {ma200.iloc[-1].item()}, MA50: {ma50.iloc[-1].item()}, Slope: {slope}")
+    # print(f"Recent Close: {recent_close}, MA200: {ma200.iloc[-1].item()}, MA50: {ma50.iloc[-1].item()}, Slope: {slope}")
 
 
     return (
@@ -209,7 +210,8 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
         "VWAP_4H", "VWAP_1D", "MA200", "Support_20_1D", "Support_20_4H",
         "MACD_Cross_4H", "MACD_Cross_1D",
         "Volume_Ratio_4H", "Volume_Ratio_1D",
-        "Swing_Score", "Entry_Quality", "Timeframe_Alignment"
+        "Swing_Score", "Entry_Quality", "Timeframe_Alignment",
+        "Beta", "Market_Cap", "Price", "ATR", "Estimated_Days"
     ]
 
     with open("swing_results.csv", "w", newline='') as f:
@@ -218,16 +220,51 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
 
     results = []
     # tickers = ["GNE", "XP", "XYF", "AMBP", "TIMB", "IBM", "FCFS", "PM", "XP", "SARO", "JFIN", "LIGHT.AS", "FTK"]
-
+    # swing_tickers2 = [
+    #     "COIN", "INTC"
+    #     "XYF", "IBM", "PM", "GNE", "DB1.DE",
+    #     "BCH", "TIMB", "FCFS", "JFIN", "FTK",
+    #     "PRDO", "GEL", "SPRO", "EHC", "BJRI",
+    #     "ADEA", "DGICA", "ENIC", "UVE", "NATH",
+    #     "TSLA", "AAPL", "GOOGL", "AMZN", "MSFT",
+    #     "NVDA", "META", "NFLX", "AMD", "INTC",
+    # ]
+    # tickers = swing_tickers2
+    if os.path.exists("liquid_big_tickers.txt"):
+        with open("liquid_big_tickers.txt", "r") as f:
+            liquid_big_tickers = [line.strip() for line in f.readlines()]
+    else:
+        liquid_big_tickers = []
     total = len(tickers)
+    seen_last = False
     for i, ticker in tqdm(enumerate(tickers)):
+        if ticker not in liquid_big_tickers:
+            continue
         try:
             set_progress((i + 1) / total)
-
-            # Download both timeframes
-            df_4h = yf.download(ticker, interval='4h', period='6mo', auto_adjust=True, progress=False)
-            df_1d = yf.download(ticker, interval='1d', period='5y', auto_adjust=True, progress=False)
-
+            move_on = False
+            while True:
+                try:
+                    # Download both timeframes
+                    tick = yf.Ticker(ticker)
+                    df_4h = tick.history(period="6mo", interval="4h", auto_adjust=True)
+                    df_1d = tick.history(period="5y", interval="1d", auto_adjust=True)
+                    info = tick.info
+                    market_cap = info.get('marketCap', 0)
+                    price = info.get('currentPrice', 0)
+                    beta = info.get('beta', 0)
+                    close = info.get('previousClose', 0)
+                    break
+                except Exception as e:
+                    if "401" in str(e):
+                        print(f"⚠ Failed to fetch data for {ticker}. Retrying...")
+                        time.sleep(60)
+                    else:
+                        move_on = True
+                        break
+            if move_on:
+                print(f"⚠ Failed to fetch data for {ticker}. Skipping...")
+                continue
             if df_4h.empty or df_1d.empty:
                 continue
 
@@ -245,28 +282,51 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
             last_1d = df_1d.iloc[-1]
 
             # Multi-timeframe screening conditions
-            close_val = last_4h['Close'][ticker]
-            close_val_1d = last_1d['Close'][ticker]
+            close_val = last_4h['Close']
+            close_val_1d = last_1d['Close']
             ma200_now = last_1d['MA200'].item()
             ma200_prev = df_1d.iloc[-5]['MA200'].item()
 
-            # Primary conditions (must meet all)
-            conditions = [
-                close_val_1d > last_1d['MA200'].item(),  # Above long-term trend
-                last_4h['RSI_4H'].item() < 35,  # 4H oversold (slightly higher threshold)
-                close_val < last_4h['VWAP_4H'].item(),  # Below VWAP for entry,
-                ma200_now > ma200_prev,  # MA200 is declining
-                is_structurally_bullish(df_1d)  # Long-term structure is bullish
-            ]
-            if len(df_1d) >= 250:
+            drop_last_3_candles_pct = (last_4h['Close'].item() - last_4h['Open'].item()) / last_4h['Open'].item() * 100
+            atr = ta.volatility.average_true_range(df_1d["High"], df_1d["Low"], df_1d["Close"],
+                                                   window=14).iloc[-1] / close_val
 
-                price_1y_ago = df_1d['Close'].iloc[-750].item()
-                if close_val < price_1y_ago:
-                    print(f"⚠ {ticker} still below 1Y-ago price, skipping.")
-                    continue
-            if ma200_now < ma200_prev:
-                print("⚠ MA200 is declining, skipping ticker:", ticker)
-            print(conditions)
+            volume = last_4h['Volume'].item()
+            upward_conditions = False
+            if upward_conditions:
+                # Primary conditions (must meet all)
+                conditions = [
+                    close_val_1d > last_1d['MA200'].item(),  # Above long-term trend
+                    last_4h['RSI_4H'].item() < 35,  # 4H oversold (slightly higher threshold)
+                    close_val < last_4h['VWAP_4H'].item(),  # Below VWAP for entry,
+                    ma200_now > ma200_prev,  # MA200 is declining
+                    is_structurally_bullish(df_1d)  # Long-term structure is bullish
+                ]
+                if len(df_1d) >= 250:
+
+                    price_1y_ago = df_1d['Close'].iloc[-750].item()
+                    if close_val < price_1y_ago:
+                        print(f"⚠ {ticker} still below 1Y-ago price, skipping.")
+                        continue
+                if ma200_now < ma200_prev:
+                    print("⚠ MA200 is declining, skipping ticker:", ticker)
+
+            else:
+                rsi_4h = last_4h['RSI_4H'].item()
+
+                conditions = [
+                        rsi_4h < 35,
+                        market_cap > 1e10,
+                        price > 1.0,
+                        volume > 100000,  # Minimum volume threshold
+
+                ]
+            if market_cap > 1e10 and volume > 100000:
+                liquid_big_tickers.append(ticker)
+                with open("liquid_big_tickers.txt", "a") as f:
+                    f.write(f"{ticker}\n")
+                # Save to list of valid tickers
+
 
             # Secondary conditions (nice to have)
             secondary_score = 0
@@ -281,7 +341,15 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
 
             # Calculate multi-timeframe score
             swing_score = calculate_multi_timeframe_score(last_4h, last_1d, ticker)
-
+            # swing_score += market_cap * 0.0000001  + volume * 0.00001  # Scale by market cap and volume
+            swing_score *= beta  # Adjust score by beta for volatility
+            # ATR-based score (volatility-aware scoring)
+            if atr > 7:
+                swing_score += 15
+            elif atr > 5:
+                swing_score += 10
+            elif atr > 3:
+                swing_score += 5
             # Determine entry quality and timeframe alignment
             if swing_score >= 80:
                 entry_quality = "Excellent"
@@ -291,6 +359,12 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
                 entry_quality = "Fair"
             else:
                 entry_quality = "Poor"
+
+            # --- Estimated days formula ---
+            if atr > 0 and beta > 0:
+                est_days = round(0.1 / (atr * beta), 1)
+            else:
+                est_days = None  # Or float('inf') if you want to highlight invalid cases
 
             # Check timeframe alignment
             rsi_alignment = "Aligned" if (last_4h['RSI_4H'].item() < 35 and
@@ -320,7 +394,14 @@ def analyze_swing_opportunities_multi_tf(set_progress, update_info=False):
                     last_1d.get('Volume_Ratio_1D', 0).item() if 'Volume_Ratio_1D' in last_1d.index else 0, 1),
                 'Swing_Score': round(swing_score, 1),
                 'Entry_Quality': entry_quality,
-                'Timeframe_Alignment': rsi_alignment
+                'Timeframe_Alignment': rsi_alignment,
+                'Beta': round(info.get('beta', 0), 2),
+                'Market_Cap': info.get('marketCap', 0),
+                'Price': info.get('currentPrice', 0),
+                'ATR': round(atr, 4),
+                'Estimated_Days': est_days,
+
+
             }
 
             results.append(result)

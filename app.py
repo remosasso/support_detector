@@ -59,10 +59,10 @@ with st.sidebar:
     st.title('📈 Live Swing Trading Dashboard')
     st.markdown("""
     This dashboard identifies swing trading opportunities based on:
-    - **RSI < 35** (4H) or **RSI < 30** (1D) (oversold)
-    - **Price above MA200** (uptrend)
-    - **Price below VWAP** (entry opportunity)
-    - **MACD signals** (momentum)
+    - **RSI < 35** (4H) (oversold)
+    - **Market Cap** (e.g., > $10B)
+    - **Volume** (e.g., > 1M shares)
+    - **Volatility** (e.g., ATR, Beta)
     """)
 
     if running:
@@ -162,7 +162,12 @@ if os.path.exists("swing_results_stable.csv"):
                 'Support_20_1D': lambda x: f"${x:.2f}",
                 'Volume_Ratio_4H': lambda x: f"{x:.1f}",
                 'Volume_Ratio_1D': lambda x: f"{x:.1f}" if x > 0 else "N/A",
-                'Swing_Score': lambda x: f"{x:.1f}"
+                'Swing_Score': lambda x: f"{x:.1f}",
+                'Beta': lambda x: f"{x:.2f}",
+                'Market_Cap': lambda x: f"${x / 1e9:.0f}B" if x > 0 else "N/A",
+                'Volume': lambda x: f"{x / 1e6:.1f}M" if x > 0 else "N/A",
+                'ATR': lambda x: f"{x*100:.2f}%" if x > 0 else "N/A",
+                'Estimated_Days' : lambda x: f"{x:.1f} days" if x > 0 else "N/A",
             }
         else:
             numeric_columns = {
@@ -175,7 +180,13 @@ if os.path.exists("swing_results_stable.csv"):
                 'Support_20_4H': lambda x: f"${x:.2f}",
                 'Support_20_1D': lambda x: f"${x:.2f}",
                 'Volume_Ratio': lambda x: f"{x:.1f}",
-                'Swing_Score': lambda x: f"{x:.1f}"
+                'Swing_Score': lambda x: f"{x:.1f}",
+                'Beta': lambda x: f"{x:.2f}",
+                'Market_Cap': lambda x: f"${x / 1e9:.2f}B" if x > 0 else "N/A",
+                'Volume': lambda x: f"{x / 1e6:.1f}M" if x > 0 else "N/A",
+                'ATR': lambda x: f"{x*100:.2f}%" if x > 0 else "N/A",
+                'Estimated_Days': lambda x: f"{x:.1f} days" if x > 0 else "N/A",
+
             }
 
         # Apply formatting only to columns that exist
@@ -189,24 +200,27 @@ if os.path.exists("swing_results_stable.csv"):
             # Since our font is white we should use dark color variant of the below
 
             if val == 'Excellent':
-                return 'background-color: #006400'
+                return 'background-color: #006400; color: white'  # DarkGreen
             elif val == 'Good':
-                return 'background-color: #FFD700'
+                return 'background-color: #228B22; color: white'  # ForestGreen
             elif val == 'Fair':
-                return 'background-color: #FF8C00'
+                return 'background-color: #6B8E23; color: white'  # OliveDrab
             else:
-                return 'background-color: #B22222'
+                return 'background-color: #A9A9A9; color: white'  # DarkGray for 'Poor' or fallback
+
 
         # select columns to display
         display_columns = [
             'Ticker', 'Close', 'MA200',
             'Support_20_1D', 'RSI_4H', 'RSI_1D',
-            'MACD_Cross_4H', 'MACD_Cross_1D',
+            'Beta', 'ATR', 'Market_Cap', 'Estimated_Days',
             'Swing_Score', 'Entry_Quality'
         ]
+        # st.write(display_df)
+
         display_columns = [col for col in display_columns if col in display_df.columns]
         display_df = display_df[display_columns]
-
+        # st.write(display_columns)
 
         styled_df = display_df.style.applymap(color_entry_quality, subset=['Entry_Quality'])
         st.dataframe(styled_df, use_container_width=True)
