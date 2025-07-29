@@ -1,28 +1,30 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import time
 import threading
-import uuid
-from swing import start_swing_analysis
+import yfinance as yf
+import ta
 
+# Import the analysis function from your swing script
+from claude_swing import start_swing_analysis
 st.set_page_config(page_title='Live Swing Trading Dashboard', layout='wide')
 
-# Detect running state from lock file
-running = os.path.exists("swing_analysis.lock")
+# --- CONFIGURATION ---
+RESULTS_FILE = "swing_results_ranked.csv"
+LOCK_FILE = "swing_analysis.lock"
 
 
-def try_read_csv(path, retries=3, delay=0.2):
-    """Safely read CSV with retries"""
+# --- HELPER FUNCTIONS ---
+
+def try_read_csv(path, retries=5, delay=0.3):
+    """Safely read CSV with retries to handle file-writing conflicts."""
     for _ in range(retries):
         try:
-            df = pd.read_csv(path)
-            if not df.empty:
-                return df
-        except pd.errors.EmptyDataError:
+            return pd.read_csv(path)
+        except (pd.errors.EmptyDataError, FileNotFoundError):
             time.sleep(delay)
         except Exception as e:
             st.warning(f"⚠ Error reading {path}: {e}")
@@ -30,521 +32,202 @@ def try_read_csv(path, retries=3, delay=0.2):
     return pd.DataFrame()
 
 
-# Initialize state
-if "swing_analysis_started" not in st.session_state:
-    st.session_state.swing_analysis_started = False
-if "swing_progress" not in st.session_state:
-    st.session_state.swing_progress = 0.0
-
-
-def get_swing_progress():
-    """Read progress from file"""
-    if os.path.exists("swing_progress.txt"):
-        try:
-            with open("swing_progress.txt") as f:
-                return float(f.read())
-        except:
-            return 0.0
-    return 0.0
+# Initialize session state for running analysis
+if "analysis_running" not in st.session_state:
+    st.session_state.analysis_running = os.path.exists(LOCK_FILE)
 
 
 def set_swing_progress(progress: float):
-    """Write progress to file"""
-    with open("swing_progress.txt", "w") as f:
-        f.write(str(progress))
+    """Callback function for the analysis thread to update progress."""
+    st.session_state.swing_progress = progress
 
 
-# Sidebar
+# --- SIDEBAR ---
 with st.sidebar:
-    st.title('📈 Live Swing Trading Dashboard')
+    st.title('📈 Ranked Swing Screener')
     st.markdown("""
-    This dashboard identifies swing trading opportunities based on:
-    - **RSI < 35** (4H) (oversold)
-    - **Market Cap** (e.g., > $10B)
-    - **Volume** (e.g., > 1M shares)
-    - **Volatility** (e.g., ATR, Beta)
+    This dashboard ranks stocks based on a weighted score across four pillars:
+    - **Quality:** Fundamental strength (margins, debt, ROE).
+    - **Trend:** Long-term uptrend (Price vs. MAs).
+    - **Pullback:** Oversold condition (RSI, nearness to support).
+    - **Risk:** Volatility and liquidity (ATR, Beta, Volume).
     """)
 
-    if running:
-        progress = get_swing_progress()
-        st.session_state.swing_analysis_started = True
-        st.sidebar.markdown(f'🔄 Analysis in Progress {progress * 100:.1f}%')
-        st.sidebar.progress(progress)
-        st.sidebar.caption("Refreshing automatically...")
+    # --- Analysis Control ---
+    st.session_state.analysis_running = os.path.exists(LOCK_FILE)
+
+    if st.session_state.analysis_running:
+        progress = st.session_state.get("swing_progress", 0.0)
+        st.info('🔄 Analysis in Progress...')
+        st.progress(progress, text=f"{progress * 100:.1f}% Complete")
+        st.caption("Dashboard will refresh automatically.")
     else:
-        st.sidebar.success("✅ No analysis running.")
+        st.success("✅ Analysis complete or not running.")
 
-    # Start Analysis Button
-    if st.button("▶ (Re-)Start Swing Analysis", disabled=running):
-        if os.path.exists("swing_analysis.lock"):
-            st.warning("⚠ Analysis already running. Please wait or delete 'swing_analysis.lock' to force restart.")
-        else:
-            # Reset state
-            st.session_state.swing_analysis_started = False
-            st.session_state.swing_progress = 0.0
-            set_swing_progress(0.0)
-
-            # Clean old files
-            for file in ["swing_results.csv", "swing_results_stable.csv"]:
-                if os.path.exists(file):
-                    os.remove(file)
+    if st.button("▶ (Re-)Start Full Analysis", disabled=st.session_state.analysis_running, type="primary"):
+        st.session_state.swing_progress = 0.0
 
 
-            def run_swing_analysis():
-                try:
-                    start_swing_analysis(set_swing_progress)
-                except Exception as e:
-                    st.session_state.swing_analysis_started = False
-                    st.error(f"Analysis failed: {e}")
+        def run_analysis_thread():
+            """Wrapper to run the analysis in a separate thread."""
+            try:
+                start_swing_analysis(set_swing_progress)
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+            finally:
+                if os.path.exists(LOCK_FILE):
+                    os.remove(LOCK_FILE)
+                st.session_state.analysis_running = False
 
 
-            thread = threading.Thread(target=run_swing_analysis, daemon=True)
-            thread.start()
-            st.session_state.swing_analysis_started = True
-            st.success("Started swing analysis thread. Dashboard will update as data comes in.")
-            st.rerun()
+        thread = threading.Thread(target=run_analysis_thread, daemon=True)
+        thread.start()
+        st.session_state.analysis_running = True
+        st.rerun()
 
-# Main Dashboard
-if os.path.exists("swing_results_stable.csv"):
-    df = try_read_csv("swing_results_stable.csv")
+# --- MAIN DASHBOARD ---
+st.title("🎯 Prime Swing Trading Candidates")
+
+if os.path.exists(RESULTS_FILE):
+    df = try_read_csv(RESULTS_FILE)
 
     if not df.empty:
-        # Sort by swing score
-        sorted_df = df.sort_values(by="Swing_Score", ascending=False)
-
-        # Determine if we have multi-timeframe data
-        is_multi_timeframe = 'RSI_4H' in sorted_df.columns
-
-        # Main title and metrics
-        st.title("📈 Swing Trading Opportunities")
-
+        # Main Metrics
         col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Opportunities", len(sorted_df))
-        with col2:
-            excellent_count = len(sorted_df[sorted_df['Entry_Quality'] == 'Excellent'])
-            st.metric("Excellent Entries", excellent_count)
-        with col3:
-            if is_multi_timeframe:
-                avg_rsi_4h = sorted_df['RSI_4H'].mean()
-                st.metric("Avg RSI (4H)", f"{avg_rsi_4h:.1f}")
-            else:
-                avg_rsi = sorted_df['RSI'].mean()
-                st.metric("Avg RSI", f"{avg_rsi:.1f}")
-        with col4:
-            if is_multi_timeframe:
-                macd_crosses = len(sorted_df[sorted_df['MACD_Cross_4H'] == True])
-                st.metric("MACD Crosses (4H)", macd_crosses)
-            else:
-                macd_crosses = len(sorted_df[sorted_df['MACD_Cross_Up'] == True])
-                st.metric("MACD Crosses", macd_crosses)
+        prime_candidates = df[df['Tier'] == 'A (Prime)']
 
-        # Results table
-        st.subheader("🎯 Swing Trading Candidates")
+        col1.metric("Total Candidates Found", len(df))
+        col2.metric("Prime Candidates (Tier A)", len(prime_candidates))
+        col3.metric("Avg. R/R Ratio (Prime)",
+                    f"{prime_candidates['rr_ratio'].mean():.2f} R" if not prime_candidates.empty else "N/A")
+        col4.metric("Avg. ATR % (Prime)",
+                    f"{prime_candidates['atr_pct'].mean():.2f}%" if not prime_candidates.empty else "N/A")
 
-        # Format the dataframe for better display
-        display_df = sorted_df.copy()
+        st.markdown("---")
 
-        # Define formatting functions for different data types
-        if is_multi_timeframe:
-            numeric_columns = {
-                'Close': lambda x: f"${x:.2f}",
-                'RSI_4H': lambda x: f"{x:.1f}",
-                'RSI_1D': lambda x: f"{x:.1f}" if x > 0 else "N/A",
-                'MACD_4H': lambda x: f"{x:.4f}",
-                'MACD_Signal_4H': lambda x: f"{x:.4f}",
-                'MACD_1D': lambda x: f"{x:.4f}" if x != 0 else "N/A",
-                'MACD_Signal_1D': lambda x: f"{x:.4f}" if x != 0 else "N/A",
-                'VWAP_4H': lambda x: f"${x:.2f}",
-                'VWAP_1D': lambda x: f"${x:.2f}" if x > 0 else "N/A",
-                'MA200': lambda x: f"${x:.2f}",
-                'Support_20_4H': lambda x: f"${x:.2f}",
-                'Support_20_1D': lambda x: f"${x:.2f}",
-                'Volume_Ratio_4H': lambda x: f"{x:.1f}",
-                'Volume_Ratio_1D': lambda x: f"{x:.1f}" if x > 0 else "N/A",
-                'Swing_Score': lambda x: f"{x:.1f}",
-                'Beta': lambda x: f"{x:.2f}",
-                'Market_Cap': lambda x: f"${x / 1e9:.0f}B" if x > 0 else "N/A",
-                'Volume': lambda x: f"{x / 1e6:.1f}M" if x > 0 else "N/A",
-                'ATR': lambda x: f"{x*100:.2f}%" if x > 0 else "N/A",
-                'Estimated_Days' : lambda x: f"{x:.1f} days" if x > 0 else "N/A",
-            }
-        else:
-            numeric_columns = {
-                'Close': lambda x: f"${x:.2f}",
-                'RSI': lambda x: f"{x:.1f}",
-                'MACD': lambda x: f"{x:.4f}",
-                'MACD_Signal': lambda x: f"{x:.4f}",
-                'VWAP': lambda x: f"${x:.2f}",
-                'MA200': lambda x: f"${x:.2f}",
-                'Support_20_4H': lambda x: f"${x:.2f}",
-                'Support_20_1D': lambda x: f"${x:.2f}",
-                'Volume_Ratio': lambda x: f"{x:.1f}",
-                'Swing_Score': lambda x: f"{x:.1f}",
-                'Beta': lambda x: f"{x:.2f}",
-                'Market_Cap': lambda x: f"${x / 1e9:.2f}B" if x > 0 else "N/A",
-                'Volume': lambda x: f"{x / 1e6:.1f}M" if x > 0 else "N/A",
-                'ATR': lambda x: f"{x*100:.2f}%" if x > 0 else "N/A",
-                'Estimated_Days': lambda x: f"{x:.1f} days" if x > 0 else "N/A",
-
-            }
-
-        # Apply formatting only to columns that exist
-        for col, formatter in numeric_columns.items():
-            if col in display_df.columns:
-                display_df[col] = display_df[col].apply(formatter)
+        # --- Display Results Table ---
+        st.subheader("Ranked Opportunities")
 
 
-        # Color coding for entry quality
-        def color_entry_quality(val):
-            # Since our font is white we should use dark color variant of the below
-
-            if val == 'Excellent':
-                return 'background-color: #006400; color: white'  # DarkGreen
-            elif val == 'Good':
-                return 'background-color: #228B22; color: white'  # ForestGreen
-            elif val == 'Fair':
-                return 'background-color: #6B8E23; color: white'  # OliveDrab
-            else:
-                return 'background-color: #A9A9A9; color: white'  # DarkGray for 'Poor' or fallback
+        def color_tier(tier):
+            if "A (Prime)" in tier: return 'background-color: #006400; color: white'
+            if "B (Watch)" in tier: return 'background-color: #00008B; color: white'
+            if "C (Speculative)" in tier: return 'background-color: #FF8C00; color: black'
+            return ''
 
 
-        # select columns to display
-        display_columns = [
-            'Ticker', 'Close', 'MA200',
-            'Support_20_1D', 'RSI_4H', 'RSI_1D',
-            'Beta', 'ATR', 'Market_Cap', 'Estimated_Days',
-            'Swing_Score', 'Entry_Quality'
-        ]
-        # st.write(display_df)
+        display_df = df.copy()
+        display_cols = ['Tier', 'Ticker', 'swing_score', 'Close', 'rr_ratio', 'atr_pct', 'rsi_4h', 'market_cap', 'beta',
+                        'quality_rank', 'trend_rank', 'pullback_rank', 'risk_rank']
+        display_cols = [col for col in display_cols if col in display_df.columns]
+        display_df = display_df[display_cols]
 
-        display_columns = [col for col in display_columns if col in display_df.columns]
-        display_df = display_df[display_columns]
-        # st.write(display_columns)
+        styled_df = display_df.style.applymap(color_tier, subset=['Tier']) \
+            .format({'swing_score': '{:.1f}', 'Close': '${:.2f}', 'rr_ratio': '{:.2f} R', 'atr_pct': '{:.2f}%',
+                     'rsi_4h': '{:.1f}', 'beta': '{:.2f}', 'quality_rank': '{:.1f}', 'trend_rank': '{:.1f}',
+                     'pullback_rank': '{:.1f}', 'risk_rank': '{:.1f}'})
 
-        styled_df = display_df.style.applymap(color_entry_quality, subset=['Entry_Quality'])
-        st.dataframe(styled_df, use_container_width=True)
+        st.dataframe(styled_df, use_container_width=True, height=min(500, 35 * len(df) + 38))
+        st.markdown("---")
 
-        # Charts section
-        st.subheader("📊 Analysis Charts")
+        # --- Detailed Chart Section ---
+        st.subheader("📊 Detailed Ticker Analysis")
 
+        ticker = st.selectbox("Select Ticker for Detailed View", df["Ticker"].unique())
 
-        # Individual stock analysis
-        ticker = st.selectbox("Select Ticker for Detailed View", sorted_df["Ticker"].unique(), index=0)
+        if ticker:
+            # --- NEW: CHART TIMEFRAME SELECTION ---
+            col1, col2 = st.columns(2)
+            with col1:
+                interval = st.selectbox(
+                    "Select Chart Interval",
+                    ['1d', '4h', '1h'],
+                    index=0,
+                    help="Select the time interval for each candlestick."
+                )
+            with col2:
+                # Define valid periods for each interval to prevent errors
+                if interval == '1d':
+                    valid_periods = ['6mo', '1y', '2y', '5y', 'max']
+                    default_index = 1  # '1y'
+                elif interval == '4h':
+                    # yfinance has limitations on 4h data, max is 2 years
+                    valid_periods = ['1mo', '3mo', '6mo', '1y', '2y']
+                    default_index = 2  # '6mo'
+                else:  # 1h
+                    # yfinance has limitations on 1h data, max is 2 years
+                    valid_periods = ['5d', '1mo', '3mo', '6mo', '1y', '2y']
+                    default_index = 1  # '1mo'
 
-        # Time range and interval selection
-        col1, col2 = st.columns(2)
-        with col1:
-            interval = st.selectbox("Interval", ["1D", "4H"], index=0)
-        with col2:
-            if interval == "4H":
-                time_range = st.selectbox("Time Range", ["6M", "3M", "1M"], index=0)
-            else:
-                time_range = st.selectbox("Time Range", ["5Y", "2Y", "1Y", "6M", "3M", "1M"], index=0)
+                period = st.selectbox(
+                    "Select Chart Period",
+                    valid_periods,
+                    index=default_index,
+                    help="Select the historical time range to display."
+                )
 
-        # Load chart data
-        chart_file = f"swing_chart_data/{ticker}_{interval.lower()}.parquet"
-
-        if os.path.exists(chart_file):
+            st.info(f"Fetching **{period}** of **{interval}** data for **{ticker}**...")
             try:
-                chart_data = pd.read_parquet(chart_file)
+                tick_data = yf.Ticker(ticker)
+                hist_df = tick_data.history(period=period, interval=interval, auto_adjust=True)
 
-                # Handle MultiIndex columns
-                if isinstance(chart_data.columns, pd.MultiIndex):
-                    chart_data.columns = chart_data.columns.get_level_values(0)
-
-                # Handle datetime index
-                if pd.api.types.is_datetime64_any_dtype(chart_data.index):
-                    if chart_data.index.tz is None:
-                        chart_data["Date"] = pd.to_datetime(chart_data.index).tz_localize("UTC")
-                    else:
-                        chart_data["Date"] = pd.to_datetime(chart_data.index)
+                if hist_df.empty:
+                    st.warning(
+                        f"Could not fetch historical data for {ticker} with interval {interval} and period {period}.")
                 else:
-                    chart_data["Date"] = pd.to_datetime(chart_data.index).tz_localize("UTC")
+                    # Calculate indicators on the fly
+                    hist_df['MA50'] = hist_df['Close'].rolling(window=50).mean()
+                    hist_df['MA200'] = hist_df['Close'].rolling(window=200).mean()
+                    hist_df['RSI'] = ta.momentum.RSIIndicator(close=hist_df['Close'], window=14).rsi()
+                    macd = ta.trend.MACD(close=hist_df['Close'])
+                    hist_df['MACD'] = macd.macd()
+                    hist_df['MACD_Signal'] = macd.macd_signal()
 
-                # Filter by time range
-                if interval == "4H":
-                    range_days = {"6M": 180, "3M": 90, "1M": 30}
-                else:
-                    range_days = {"5Y": 1825 ,"2Y": 730, "1Y": 365, "6M": 180, "3M": 90, "1M": 30}
+                    interval_name = {'1d': 'Daily', '4h': '4-Hourly', '1h': 'Hourly'}.get(interval, interval)
 
-                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=range_days[time_range])
-                chart_data = chart_data[chart_data["Date"] >= cutoff]
-
-                # Create subplots
-                fig = make_subplots(
-                    rows=3, cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.05,
-                    subplot_titles=(
-                    f'{ticker} Price & Indicators ({interval})', f'RSI ({interval})', f'MACD ({interval})'),
-                    row_heights=[0.6, 0.2, 0.2]
-                )
-
-                # Candlestick chart - handle both single and multi-index columns
-                price_columns = {}
-                for price_type in ['Open', 'High', 'Low', 'Close']:
-                    # Look for exact match first, then partial match
-                    if price_type in chart_data.columns:
-                        price_columns[price_type] = price_type
-                    else:
-                        matching_cols = [col for col in chart_data.columns if price_type in str(col)]
-                        if matching_cols:
-                            price_columns[price_type] = matching_cols[0]
-
-                if len(price_columns) == 4:
-                    fig.add_trace(
-                        go.Candlestick(
-                            x=chart_data['Date'],
-                            open=chart_data[price_columns['Open']],
-                            high=chart_data[price_columns['High']],
-                            low=chart_data[price_columns['Low']],
-                            close=chart_data[price_columns['Close']],
-                            name="Price"
-                        ), row=1, col=1
+                    fig = make_subplots(
+                        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        subplot_titles=(
+                        f'{ticker} {interval_name} Price Action', f'RSI ({interval})', f'MACD ({interval})'),
+                        row_heights=[0.6, 0.2, 0.2]
                     )
 
-                # Add moving averages and indicators based on interval
-                if interval == "4H":
-                    # 4H specific indicators
-                    if 'MA200' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['MA200'],
-                                name="MA200",
-                                line=dict(color='blue', width=2)
-                            ), row=1, col=1
-                        )
-
-                    if 'VWAP_4H' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['VWAP_4H'],
-                                name="VWAP (4H)",
-                                line=dict(color='orange', width=2)
-                            ), row=1, col=1
-                        )
-                    elif 'VWAP' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['VWAP'],
-                                name="VWAP",
-                                line=dict(color='orange', width=2)
-                            ), row=1, col=1
-                        )
-
-                    # RSI for 4H
-                    rsi_col = 'RSI_4H' if 'RSI_4H' in chart_data.columns else 'RSI'
-                    if rsi_col in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data[rsi_col],
-                                name="RSI (4H)",
-                                line=dict(color='purple')
-                            ), row=2, col=1
-                        )
-                        # RSI levels for 4H
-                        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                        fig.add_hline(y=35, line_dash="dash", line_color="orange", row=2, col=1)
-                        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-                    # MACD for 4H
-                    macd_col = 'MACD_4H' if 'MACD_4H' in chart_data.columns else 'MACD'
-                    signal_col = 'MACD_signal_4H' if 'MACD_signal_4H' in chart_data.columns else 'MACD_signal'
-
-                    if macd_col in chart_data.columns and signal_col in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data[macd_col],
-                                name="MACD (4H)",
-                                line=dict(color='blue')
-                            ), row=3, col=1
-                        )
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data[signal_col],
-                                name="Signal (4H)",
-                                line=dict(color='red')
-                            ), row=3, col=1
-                        )
-                        fig.add_hline(y=0, line_dash="dash", line_color="gray", row=3, col=1)
-
-                    # Add support levels
-                    if 'Support_20_4H' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['Support_20_4H'],
-                                name="Support",
-                                line=dict(color='green', dash='dash', width=1)
-                            ), row=1, col=1
-                        )
-
-                else:  # 1D interval
-                    # 1D specific indicators
-                    if 'MA200' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['MA200'],
-                                name="MA200",
-                                line=dict(color='blue', width=2)
-                            ), row=1, col=1
-                        )
-
-                    if 'VWAP_1D' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['VWAP_1D'],
-                                name="VWAP (1D)",
-                                line=dict(color='orange', width=2)
-                            ), row=1, col=1
-                        )
-                    elif 'VWAP' in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data['VWAP'],
-                                name="VWAP",
-                                line=dict(color='orange', width=2)
-                            ), row=1, col=1
-                        )
-
-                    # RSI for 1D
-                    rsi_col = 'RSI_1D' if 'RSI_1D' in chart_data.columns else 'RSI'
-                    if rsi_col in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data[rsi_col],
-                                name="RSI (1D)",
-                                line=dict(color='purple')
-                            ), row=2, col=1
-                        )
-                        # RSI levels for 1D
-                        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-                    # MACD for 1D
-                    macd_col = 'MACD_1D' if 'MACD_1D' in chart_data.columns else 'MACD'
-                    signal_col = 'MACD_signal_1D' if 'MACD_signal_1D' in chart_data.columns else 'MACD_signal'
-
-                    if macd_col in chart_data.columns and signal_col in chart_data.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data[macd_col],
-                                name="MACD (1D)",
-                                line=dict(color='blue')
-                            ), row=3, col=1
-                        )
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_data['Date'],
-                                y=chart_data[signal_col],
-                                name="Signal (1D)",
-                                line=dict(color='red')
-                            ), row=3, col=1
-                        )
-                        fig.add_hline(y=0, line_dash="dash", line_color="gray", row=3, col=1)
-
-                # Add support levels
-                if 'Support_20_1D' in chart_data.columns:
                     fig.add_trace(
-                        go.Scatter(
-                            x=chart_data['Date'],
-                            y=chart_data['Support_20_1D'],
-                            name="Support",
-                            line=dict(color='green', dash='dash', width=1)
-                        ), row=1, col=1
-                    )
+                        go.Candlestick(x=hist_df.index, open=hist_df['Open'], high=hist_df['High'], low=hist_df['Low'],
+                                       close=hist_df['Close'], name='Price'), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MA50'], name='50-Period MA',
+                                             line=dict(color='orange', width=1.5)), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MA200'], name='200-Period MA',
+                                             line=dict(color='blue', width=2)), row=1, col=1)
 
-                fig.update_layout(
-                    height=800,
-                    title=f"{ticker} Swing Trading Analysis ({interval} Timeframe)",
-                    xaxis_rangeslider_visible=False
-                )
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['RSI'], name='RSI', line=dict(color='purple')),
+                                  row=2, col=1)
+                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1, opacity=0.5)
+                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1, opacity=0.5)
 
-                st.plotly_chart(fig, use_container_width=True)
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MACD'], name='MACD', line=dict(color='cyan')),
+                                  row=3, col=1)
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MACD_Signal'], name='Signal',
+                                             line=dict(color='magenta')), row=3, col=1)
+                    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=3, col=1)
 
-                # Display current metrics for selected stock
-                stock_data = sorted_df[sorted_df['Ticker'] == ticker].iloc[0]
+                    fig.update_layout(height=800, xaxis_rangeslider_visible=False,
+                                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+                    fig.update_yaxes(title_text="RSI", row=2, col=1)
+                    fig.update_yaxes(title_text="MACD", row=3, col=1)
 
-                if is_multi_timeframe:
-                    # Multi-timeframe metrics display
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Current Price", f"${stock_data['Close']}")
-                        st.metric("RSI (4H)", f"{stock_data['RSI_4H']:.1f}")
-                        if stock_data['RSI_1D'] > 0:
-                            st.metric("RSI (1D)", f"{stock_data['RSI_1D']:.1f}")
-                    with col2:
-                        st.metric("VWAP (4H)", f"${stock_data['VWAP_4H']:.2f}")
-                        if stock_data.get('VWAP_1D', 0) > 0:
-                            st.metric("VWAP (1D)", f"${stock_data['VWAP_1D']:.2f}")
-                        st.metric("MA200", f"${stock_data['MA200']:.2f}")
-                    with col3:
-                        st.metric("Support", f"${stock_data['Support_20_4H']:.2f}")
-                        st.metric("Volume Ratio (4H)", f"{stock_data['Volume_Ratio_4H']:.1f}x")
-                        if stock_data.get('Volume_Ratio_1D', 0) > 0:
-                            st.metric("Volume Ratio (1D)", f"{stock_data['Volume_Ratio_1D']:.1f}x")
-                    with col4:
-                        st.metric("Swing Score", f"{stock_data['Swing_Score']:.1f}")
-                        st.metric("Entry Quality", stock_data['Entry_Quality'])
-                        if 'Timeframe_Alignment' in stock_data.index:
-                            st.metric("TF Alignment", stock_data['Timeframe_Alignment'])
-                else:
-                    # Original single timeframe metrics
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Current Price", f"${stock_data['Close']}")
-                        st.metric("RSI", f"{stock_data['RSI']:.1f}")
-                    with col2:
-                        st.metric("VWAP", f"${stock_data['VWAP']:.2f}")
-                        st.metric("MA200", f"${stock_data['MA200']:.2f}")
-                    with col3:
-                        st.metric("Support", f"${stock_data['Support_20_4H']:.2f}")
-                        st.metric("Volume Ratio", f"{stock_data['Volume_Ratio']:.1f}x")
-                    with col4:
-                        st.metric("Swing Score", f"{stock_data['Swing_Score']:.1f}")
-                        st.metric("Entry Quality", stock_data['Entry_Quality'])
+                    st.plotly_chart(fig, use_container_width=True)
 
             except Exception as e:
-                st.error(f"Failed to render chart: {e}")
-                # Debug info
-                if os.path.exists(chart_file):
-                    try:
-                        debug_data = pd.read_parquet(chart_file)
-                        st.write(f"**Debug:** Chart file shape: {debug_data.shape}")
-                        st.write(f"**Debug:** Available columns: {list(debug_data.columns)}")
-                    except Exception as debug_e:
-                        st.error(f"Debug error: {debug_e}")
-        else:
-            st.warning(f"No chart data found for {ticker} at {interval} interval")
-            # Show available files
-            if os.path.exists("swing_chart_data"):
-                available_files = [f for f in os.listdir("swing_chart_data") if ticker in f]
-                if available_files:
-                    st.info(f"Available files for {ticker}: {available_files}")
-
+                st.error(f"An error occurred while creating the chart for {ticker}: {e}")
 
     else:
-        st.warning("📄 Results file found, but no swing opportunities detected yet.")
-
+        st.warning("Results file is empty. Either no opportunities were found or the analysis hasn't completed.")
 else:
-    st.info("🕒 Awaiting swing analysis results...")
+    st.info("Awaiting first analysis run. Click the button in the sidebar to begin.")
 
-# Auto-refresh logic
-if st.session_state.swing_analysis_started:
-    progress = get_swing_progress()
-    time.sleep(1)
+# --- AUTO-REFRESH LOGIC ---
+if st.session_state.analysis_running:
+    time.sleep(2)
     st.rerun()
-elif os.path.exists("swing_progress.txt") and get_swing_progress() >= 1.0:
-    st.sidebar.success("✅ Swing analysis complete!")
