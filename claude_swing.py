@@ -144,6 +144,20 @@ def get_pillar_metrics(tick, info, last_4h, last_1d, df_1d):
         return None
 # --- Main Analysis Function ---
 
+
+def copy_results_snapshot():
+    """Copy results to stable file for dashboard reading"""
+    try:
+        import shutil
+        shutil.copyfile("swing_results_ranked.csv", "swing_results_stable.csv")
+        df = pd.read_csv("swing_results_stable.csv")
+        df = df.drop_duplicates(subset="Ticker", keep="last")
+        df.to_csv("swing_results_stable.csv", index=False)
+    except Exception as e:
+        print(f"⚠ Failed to copy swing_results.csv: {e}")
+
+
+
 def analyze_swing_opportunities(set_progress, update_info=False):
     """
     Refactored analysis using a pillar-based, percentile-ranked scoring system.
@@ -165,55 +179,56 @@ def analyze_swing_opportunities(set_progress, update_info=False):
     # --- STEP 1: GATHER RAW DATA FOR ALL TICKERS ---
     all_results_data = []
     print("\n--- Step 1: Gathering raw data for all tickers ---")
+    total = len(tickers)
     for i, ticker in tqdm(enumerate(tickers), total=len(tickers), desc="Fetching Data"):
-        if callable(set_progress): set_progress((i + 1) / len(tickers))
-
-        move_on = False
-        while True:
-            try:
-                # Download both timeframes
-                tick = yf.Ticker(ticker)
-                info = tick.info
-                break
-            except Exception as e:
-                if "401" in str(e):
-                    print(f"⚠ Failed to fetch data for {ticker}. Retrying...")
-                    time.sleep(60)
-                else:
-                    move_on = True
+        try:
+            set_progress((i + 1) / total)
+            move_on = False
+            while True:
+                try:
+                    # Download both timeframes
+                    tick = yf.Ticker(ticker)
+                    info = tick.info
                     break
-        if move_on:
-            print(f"⚠ Failed to fetch data for {ticker}. Skipping...")
+                except Exception as e:
+                    if "401" in str(e):
+                        print(f"⚠ Failed to fetch data for {ticker}. Retrying...")
+                        time.sleep(60)
+                    else:
+                        move_on = True
+                        break
+            if move_on:
+                print(f"⚠ Failed to fetch data for {ticker}. Skipping...")
+                continue
+
+            # Pre-computation filters to save time
+            if info.get('marketCap', 0) < 1e10 or info.get('averageVolume', 0) < 200000:
+                print(f"Skipping {ticker} due to low market cap or volume.")
+                continue
+
+            df_4h = tick.history(period="3mo", interval="1h", auto_adjust=True)
+            df_1d = tick.history(period="2y", interval="1d", auto_adjust=True)
+
+            if df_4h.empty or df_1d.empty or len(df_1d) < 201:
+                print(f"Skipping {ticker} due to insufficient data.")
+                continue
+
+            df_4h, df_1d = compute_indicators_multi_timeframe(df_4h, df_1d, ticker)
+            df_4h, df_1d = df_4h.dropna(), df_1d.dropna()
+
+            if df_4h.empty or df_1d.empty:
+                print(f"Skipping {ticker} due to NaN values in indicators.")
+                continue
+
+            metrics = get_pillar_metrics(tick, info, df_4h.iloc[-1], df_1d.iloc[-1], df_1d)
+            if metrics: all_results_data.append(metrics)
+        except Exception as e:
+            print(e)
+            # Hide common, non-critical yfinance messages to reduce noise
+            if "No data found" not in str(e) and "404" not in str(e):
+                print(f"Error processing {ticker}: {e}")
             continue
-
-        # Pre-computation filters to save time
-        if info.get('marketCap', 0) < 1e10 or info.get('averageVolume', 0) < 200000:
-            print(f"Skipping {ticker} due to low market cap or volume.")
-            continue
-
-        df_4h = tick.history(period="3mo", interval="1h", auto_adjust=True)
-        df_1d = tick.history(period="2y", interval="1d", auto_adjust=True)
-
-        if df_4h.empty or df_1d.empty or len(df_1d) < 201:
-            print(f"Skipping {ticker} due to insufficient data.")
-            continue
-
-        df_4h, df_1d = compute_indicators_multi_timeframe(df_4h, df_1d, ticker)
-        df_4h, df_1d = df_4h.dropna(), df_1d.dropna()
-
-        if df_4h.empty or df_1d.empty:
-            print(f"Skipping {ticker} due to NaN values in indicators.")
-            continue
-
-        metrics = get_pillar_metrics(tick, info, df_4h.iloc[-1], df_1d.iloc[-1], df_1d)
-        if metrics: all_results_data.append(metrics)
-
-    # except Exception as e:
-    #     Hide common, non-critical yfinance messages to reduce noise
-        # if "No data found" not in str(e) and "404" not in str(e):
-        #     print(f"Error processing {ticker}: {e}")
-        # continue
-
+    print("Done???")
     if not all_results_data:
         print("\nNo valid ticker data gathered. Exiting analysis.")
         if os.path.exists(lock_filename): os.remove(lock_filename)
@@ -317,13 +332,16 @@ def analyze_swing_opportunities(set_progress, update_info=False):
     # Optional: Print top 5 results to console
     print("\n--- Top 5 Prime Candidates ---")
     print(final_results.head(50).to_string(index=False))
-
+    copy_results_snapshot()
 
 # --- Wrapper and Execution Block ---
 
 def start_swing_analysis(set_progress, update_info=False):
     """Wrapper function to start the enhanced analysis"""
-    analyze_swing_opportunities(set_progress, update_info)
+    try:
+        analyze_swing_opportunities(set_progress, update_info)
+    except Exception as e:
+        print(e)
 
 DEBUG = False
 if DEBUG:

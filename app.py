@@ -13,7 +13,7 @@ from claude_swing import start_swing_analysis
 st.set_page_config(page_title='Live Swing Trading Dashboard', layout='wide')
 
 # --- CONFIGURATION ---
-RESULTS_FILE = "swing_results_ranked.csv"
+RESULTS_FILE = "swing_results_stable.csv"
 LOCK_FILE = "swing_analysis.lock"
 
 
@@ -31,6 +31,14 @@ def try_read_csv(path, retries=5, delay=0.3):
             time.sleep(delay)
     return pd.DataFrame()
 
+def get_swing_progress():
+    if os.path.exists("swing_progress.txt"):
+        try:
+            with open("swing_progress.txt") as f:
+                return float(f.read())
+        except:
+            return 0.0
+    return 0.0
 
 # Initialize session state for running analysis
 if "analysis_running" not in st.session_state:
@@ -38,9 +46,8 @@ if "analysis_running" not in st.session_state:
 
 
 def set_swing_progress(progress: float):
-    """Callback function for the analysis thread to update progress."""
-    st.session_state.swing_progress = progress
-
+    with open("swing_progress.txt", "w") as f:
+        f.write(str(progress))
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -57,7 +64,7 @@ with st.sidebar:
     st.session_state.analysis_running = os.path.exists(LOCK_FILE)
 
     if st.session_state.analysis_running:
-        progress = st.session_state.get("swing_progress", 0.0)
+        progress = get_swing_progress()
         st.info('🔄 Analysis in Progress...')
         st.progress(progress, text=f"{progress * 100:.1f}% Complete")
         st.caption("Dashboard will refresh automatically.")
@@ -229,5 +236,8 @@ else:
 
 # --- AUTO-REFRESH LOGIC ---
 if st.session_state.analysis_running:
-    time.sleep(2)
+    progress = get_swing_progress()
+    time.sleep(1)
     st.rerun()
+elif os.path.exists("swing_progress.txt") and get_swing_progress() >= 1.0:
+    st.sidebar.success("✅ Swing analysis complete!")
