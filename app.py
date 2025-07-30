@@ -9,18 +9,16 @@ import yfinance as yf
 import ta
 
 # Import the analysis function from your swing script
-from claude_swing import start_swing_analysis
+from gpt_swing import analyze_longterm_support_dips
+
 st.set_page_config(page_title='Live Swing Trading Dashboard', layout='wide')
 
 # --- CONFIGURATION ---
 RESULTS_FILE = "swing_results_stable.csv"
 LOCK_FILE = "swing_analysis.lock"
 
-
 # --- HELPER FUNCTIONS ---
-
 def try_read_csv(path, retries=5, delay=0.3):
-    """Safely read CSV with retries to handle file-writing conflicts."""
     for _ in range(retries):
         try:
             return pd.read_csv(path)
@@ -40,10 +38,17 @@ def get_swing_progress():
             return 0.0
     return 0.0
 
-# Initialize session state for running analysis
 if "analysis_running" not in st.session_state:
     st.session_state.analysis_running = os.path.exists(LOCK_FILE)
 
+if os.path.exists("swing_done.txt"):
+    st.session_state.analysis_running = False
+    os.remove("swing_done.txt")
+
+if os.path.exists("swing_error.txt"):
+    with open("swing_error.txt") as f:
+        st.error("Swing analysis failed: " + f.read())
+    os.remove("swing_error.txt")
 
 def set_swing_progress(progress: float):
     with open("swing_progress.txt", "w") as f:
@@ -53,15 +58,14 @@ def set_swing_progress(progress: float):
 with st.sidebar:
     st.title('📈 Ranked Swing Screener')
     st.markdown("""
-    This dashboard ranks stocks based on a weighted score across four pillars:
-    - **Quality:** Fundamental strength (margins, debt, ROE).
-    - **Trend:** Long-term uptrend (Price vs. MAs).
-    - **Pullback:** Oversold condition (RSI, nearness to support).
-    - **Risk:** Volatility and liquidity (ATR, Beta, Volume).
+    This dashboard identifies sharp drops based on:
+    - **RSI < 30**
+    - **Close near 180-day support**
+    - **5-day price drop > 5%**
     """)
 
-    # --- Analysis Control ---
     st.session_state.analysis_running = os.path.exists(LOCK_FILE)
+    time.sleep(0.5)  # Ensure file copy is finished before rerun
 
     if st.session_state.analysis_running:
         progress = get_swing_progress()
@@ -76,15 +80,17 @@ with st.sidebar:
 
 
         def run_analysis_thread():
-            """Wrapper to run the analysis in a separate thread."""
             try:
-                start_swing_analysis(set_swing_progress)
+                analyze_longterm_support_dips(set_swing_progress)  # this function should NOT use st.*
             except Exception as e:
-                st.error(f"Analysis failed: {e}")
+                with open("swing_error.txt", "w") as f:
+                    f.write(str(e))
             finally:
                 if os.path.exists(LOCK_FILE):
                     os.remove(LOCK_FILE)
-                st.session_state.analysis_running = False
+                # Do NOT touch st.session_state here
+                with open("swing_done.txt", "w") as f:
+                    f.write("done")
 
 
         thread = threading.Thread(target=run_analysis_thread, daemon=True)
@@ -93,85 +99,56 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN DASHBOARD ---
-st.title("🎯 Prime Swing Trading Candidates")
+st.title("🎯 Sharp Drop Swing Candidates")
 
 if os.path.exists(RESULTS_FILE):
     df = try_read_csv(RESULTS_FILE)
 
     if not df.empty:
-        # Main Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        prime_candidates = df[df['Tier'] == 'A (Prime)']
-
-        col1.metric("Total Candidates Found", len(df))
-        col2.metric("Prime Candidates (Tier A)", len(prime_candidates))
-        col3.metric("Avg. R/R Ratio (Prime)",
-                    f"{prime_candidates['rr_ratio'].mean():.2f} R" if not prime_candidates.empty else "N/A")
-        col4.metric("Avg. ATR % (Prime)",
-                    f"{prime_candidates['atr_pct'].mean():.2f}%" if not prime_candidates.empty else "N/A")
+        col1, col2 = st.columns(2)
+        tier_counts = df['RSI_Tier'].value_counts()
+        col1.metric("Total Candidates", len(df))
+        col2.metric("Tier A (Extreme RSI < 20)", tier_counts.get("A (Extreme)", 0))
 
         st.markdown("---")
-
-        # --- Display Results Table ---
         st.subheader("Ranked Opportunities")
 
+        display_df = df.copy()
+        display_cols = ['RSI_Tier', 'Ticker', 'Close', 'RSI', '5D_Change_%', 'Dist_to_LongSupport_%', 'MarketCap', 'MarketCapTier']
+        display_df = display_df[display_cols]
 
         def color_tier(tier):
-            if "A (Prime)" in tier: return 'background-color: #006400; color: white'
-            if "B (Watch)" in tier: return 'background-color: #00008B; color: white'
-            if "C (Speculative)" in tier: return 'background-color: #FF8C00; color: black'
+            tier = str(tier)
+            if "A" in tier: return 'background-color: #006400; color: white'
+            if "B" in tier: return 'background-color: #00008B; color: white'
+            if "C" in tier: return 'background-color: #FF8C00; color: black'
             return ''
 
 
-        display_df = df.copy()
-        display_cols = ['Tier', 'Ticker', 'swing_score', 'Close', 'rr_ratio', 'atr_pct', 'rsi_4h', 'market_cap', 'beta',
-                        'quality_rank', 'trend_rank', 'pullback_rank', 'risk_rank']
-        display_cols = [col for col in display_cols if col in display_df.columns]
-        display_df = display_df[display_cols]
-
-        styled_df = display_df.style.applymap(color_tier, subset=['Tier']) \
-            .format({'swing_score': '{:.1f}', 'Close': '${:.2f}', 'rr_ratio': '{:.2f} R', 'atr_pct': '{:.2f}%',
-                     'rsi_4h': '{:.1f}', 'beta': '{:.2f}', 'quality_rank': '{:.1f}', 'trend_rank': '{:.1f}',
-                     'pullback_rank': '{:.1f}', 'risk_rank': '{:.1f}'})
+        styled_df = display_df.style \
+            .format({
+            'RSI': '{:.2f}',
+            '5D_Change_%': '{:.2f}%',
+            'Close': '${:.2f}',
+            'Dist_to_LongSupport_%': '{:.2f}',
+            'MarketCap': '{}'  # Already formatted like '$30.3B'
+        }) \
+            .applymap(color_tier, subset=['RSI_Tier'])  # Keep your tier coloring
 
         st.dataframe(styled_df, use_container_width=True, height=min(500, 35 * len(df) + 38))
         st.markdown("---")
 
-        # --- Detailed Chart Section ---
         st.subheader("📊 Detailed Ticker Analysis")
-
         ticker = st.selectbox("Select Ticker for Detailed View", df["Ticker"].unique())
 
         if ticker:
-            # --- NEW: CHART TIMEFRAME SELECTION ---
             col1, col2 = st.columns(2)
             with col1:
-                interval = st.selectbox(
-                    "Select Chart Interval",
-                    ['1d', '4h', '1h'],
-                    index=0,
-                    help="Select the time interval for each candlestick."
-                )
+                interval = st.selectbox("Select Chart Interval", ['1d', '4h', '1h'], index=0)
             with col2:
-                # Define valid periods for each interval to prevent errors
-                if interval == '1d':
-                    valid_periods = ['6mo', '1y', '2y', '5y', 'max']
-                    default_index = 1  # '1y'
-                elif interval == '4h':
-                    # yfinance has limitations on 4h data, max is 2 years
-                    valid_periods = ['1mo', '3mo', '6mo', '1y', '2y']
-                    default_index = 2  # '6mo'
-                else:  # 1h
-                    # yfinance has limitations on 1h data, max is 2 years
-                    valid_periods = ['5d', '1mo', '3mo', '6mo', '1y', '2y']
-                    default_index = 1  # '1mo'
-
-                period = st.selectbox(
-                    "Select Chart Period",
-                    valid_periods,
-                    index=default_index,
-                    help="Select the historical time range to display."
-                )
+                valid_periods = ['6mo', '1y', '2y', '5y'] if interval == '1d' else ['1mo', '3mo', '6mo']
+                default_index = 1
+                period = st.selectbox("Select Chart Period", valid_periods, index=default_index)
 
             st.info(f"Fetching **{period}** of **{interval}** data for **{ticker}**...")
             try:
@@ -179,10 +156,8 @@ if os.path.exists(RESULTS_FILE):
                 hist_df = tick_data.history(period=period, interval=interval, auto_adjust=True)
 
                 if hist_df.empty:
-                    st.warning(
-                        f"Could not fetch historical data for {ticker} with interval {interval} and period {period}.")
+                    st.warning(f"Could not fetch historical data for {ticker}.")
                 else:
-                    # Calculate indicators on the fly
                     hist_df['MA50'] = hist_df['Close'].rolling(window=50).mean()
                     hist_df['MA200'] = hist_df['Close'].rolling(window=200).mean()
                     hist_df['RSI'] = ta.momentum.RSIIndicator(close=hist_df['Close'], window=14).rsi()
@@ -191,29 +166,23 @@ if os.path.exists(RESULTS_FILE):
                     hist_df['MACD_Signal'] = macd.macd_signal()
 
                     interval_name = {'1d': 'Daily', '4h': '4-Hourly', '1h': 'Hourly'}.get(interval, interval)
+                    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                                        subplot_titles=(f'{ticker} {interval_name} Price Action',
+                                                        f'RSI ({interval})', f'MACD ({interval})'),
+                                        row_heights=[0.6, 0.2, 0.2])
 
-                    fig = make_subplots(
-                        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-                        subplot_titles=(
-                        f'{ticker} {interval_name} Price Action', f'RSI ({interval})', f'MACD ({interval})'),
-                        row_heights=[0.6, 0.2, 0.2]
-                    )
-
-                    fig.add_trace(
-                        go.Candlestick(x=hist_df.index, open=hist_df['Open'], high=hist_df['High'], low=hist_df['Low'],
-                                       close=hist_df['Close'], name='Price'), row=1, col=1)
+                    fig.add_trace(go.Candlestick(x=hist_df.index, open=hist_df['Open'], high=hist_df['High'],
+                                                 low=hist_df['Low'], close=hist_df['Close'], name='Price'), row=1, col=1)
                     fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MA50'], name='50-Period MA',
-                                             line=dict(color='orange', width=1.5)), row=1, col=1)
+                                             line=dict(color='orange')), row=1, col=1)
                     fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MA200'], name='200-Period MA',
-                                             line=dict(color='blue', width=2)), row=1, col=1)
-
-                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['RSI'], name='RSI', line=dict(color='purple')),
-                                  row=2, col=1)
+                                             line=dict(color='blue')), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['RSI'], name='RSI',
+                                             line=dict(color='purple')), row=2, col=1)
                     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1, opacity=0.5)
                     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1, opacity=0.5)
-
-                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MACD'], name='MACD', line=dict(color='cyan')),
-                                  row=3, col=1)
+                    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MACD'], name='MACD',
+                                             line=dict(color='cyan')), row=3, col=1)
                     fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['MACD_Signal'], name='Signal',
                                              line=dict(color='magenta')), row=3, col=1)
                     fig.add_hline(y=0, line_dash="dot", line_color="gray", row=3, col=1)
@@ -225,19 +194,16 @@ if os.path.exists(RESULTS_FILE):
                     fig.update_yaxes(title_text="MACD", row=3, col=1)
 
                     st.plotly_chart(fig, use_container_width=True)
-
             except Exception as e:
                 st.error(f"An error occurred while creating the chart for {ticker}: {e}")
-
     else:
         st.warning("Results file is empty. Either no opportunities were found or the analysis hasn't completed.")
 else:
     st.info("Awaiting first analysis run. Click the button in the sidebar to begin.")
 
-# --- AUTO-REFRESH LOGIC ---
 if st.session_state.analysis_running:
     progress = get_swing_progress()
-    time.sleep(1)
     st.rerun()
 elif os.path.exists("swing_progress.txt") and get_swing_progress() >= 1.0:
     st.sidebar.success("✅ Swing analysis complete!")
+
