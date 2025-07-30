@@ -34,18 +34,18 @@ else:
     tickers = list(us_ticker_dict.keys()) + list(eu_ticker_dict.keys())
 
 tickers = list(set(tickers))  # Remove duplicates
-tickers = [
-    "IT", "NTRA", "CHTR", "CMG", "COST", "DUOL", "FI", "CHWY", "HCA", "SUI",
-    "STM", "EFX", "GDDY", "BIP", "LULU", "CNI", "INTC", "DOC", "TXN", "OTIS",
-    "ELS", "BRO", "SAP", "UMC", "TECK", "BUD", "NOK", "TXT", "CP", "EHC", "WAB",
-    "INVH", "MMC", "CCK", "RGLD", "LUV", "HON", "CNC", "SWKS", "PM", "AMH",
-    "CMCSA", "FMS", "RS", "IBM", "INFY", "GLPI", "AR", "ERIC", "BSBR", "COR",
-    "CVS", "SBAC", "EXE", "CB", "6857.T", "KO", "KR", "RELX", "EBR", "BBD",
-    "CL", "DG", "PNW", "HRL", "LMT", "TAK", "ACI", "SBS", "FMX",    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "JNJ", "V",
-    "PG", "UNH", "HD", "MA", "COST", "PEP", "AVGO", "ADBE", "CRM", "WMT",
-    "BAC", "MCD", "KO", "PFE", "DIS", "CSCO", "NFLX", "TMO", "ACN", "ABT",
-    "HON", "IBM", "SBUX", "CAT", "GS", "DE", "INTC", "AMD", "QCOM", "TXN"
-]
+# tickers = [
+#     "IT", "NTRA", "CHTR", "CMG", "COST", "DUOL", "FI", "CHWY", "HCA", "SUI",
+#     "STM", "EFX", "GDDY", "BIP", "LULU", "CNI", "INTC", "DOC", "TXN", "OTIS",
+#     "ELS", "BRO", "SAP", "UMC", "TECK", "BUD", "NOK", "TXT", "CP", "EHC", "WAB",
+#     "INVH", "MMC", "CCK", "RGLD", "LUV", "HON", "CNC", "SWKS", "PM", "AMH",
+#     "CMCSA", "FMS", "RS", "IBM", "INFY", "GLPI", "AR", "ERIC", "BSBR", "COR",
+#     "CVS", "SBAC", "EXE", "CB", "6857.T", "KO", "KR", "RELX", "EBR", "BBD",
+#     "CL", "DG", "PNW", "HRL", "LMT", "TAK", "ACI", "SBS", "FMX",    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "JNJ", "V",
+#     "PG", "UNH", "HD", "MA", "COST", "PEP", "AVGO", "ADBE", "CRM", "WMT",
+#     "BAC", "MCD", "KO", "PFE", "DIS", "CSCO", "NFLX", "TMO", "ACN", "ABT",
+#     "HON", "IBM", "SBUX", "CAT", "GS", "DE", "INTC", "AMD", "QCOM", "TXN"
+# ]
 # --- Parameters ---
 RSI_THRESHOLD = 35
 SUPPORT_DISTANCE_THRESHOLD = 0.03
